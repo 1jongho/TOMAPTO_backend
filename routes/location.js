@@ -2,7 +2,33 @@
 const express = require('express');
 const db = require('../db'); // DB 연결 파일
 const router = express.Router();
-const auth = require('../routes/auth'); // 인증 미들웨어
+const jwt = require('jsonwebtoken');
+const { isValidToken } = require('../routes/auth'); // 인증 미들웨어로 가정
+
+// 인증 미들웨어 - 토큰을 검증하고 사용자 정보를 req에 추가
+const auth = (req, res, next) => {
+  try {
+    // 헤더에서 토큰 추출
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ error: '인증 토큰이 필요합니다.' });
+    }
+    
+    // 토큰 검증
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || '7belly_fat4');
+    
+    // 요청 객체에 사용자 정보 추가
+    req.user = {
+      user_id: decoded.user_id
+    };
+    
+    next();
+  } catch (error) {
+    console.error('인증 오류:', error);
+    return res.status(401).json({ error: '유효하지 않은 토큰입니다.' });
+  }
+};
 
 // API 상태 확인 엔드포인트 (디버깅용)
 router.get('/status', auth, (req, res) => {
@@ -282,7 +308,7 @@ router.get('/active-sharings', auth, (req, res) => {
 
   db.query(sql, [user_id, user_id], (err, result) => {
     if (err) {
-      console.error('위치 공유 목록, 조회 실패:', err);
+      console.error('위치 공유 목록 조회 실패:', err);
       return res.status(500).json({ error: '위치 공유 목록 조회에 실패했습니다.' });
     }
     
