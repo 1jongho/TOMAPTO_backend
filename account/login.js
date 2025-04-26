@@ -95,7 +95,7 @@ router.post("/", async (req, res) => {
         // 필요에 따라 추가 정보 포함 가능
       },
       JWT_SECRET,
-      { expiresIn: "24h" } // 토큰 유효 기간 설정
+      { expiresIn: "30d" } // 토큰 유효 기간 설정
     );
 
     // 로그인 성공 응답
