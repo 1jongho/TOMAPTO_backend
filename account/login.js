@@ -18,7 +18,7 @@ router.post("/", async (req, res) => {
   try {
     console.log("로그인 요청 받음:", req.body);
 
-    const { user_id, user_password } = req.body;
+    const { user_id, user_password, remember_me } = req.body; // remember_me 옵션 추가
 
     // 필수 필드 체크
     if (!user_id || !user_password) {
@@ -95,7 +95,7 @@ router.post("/", async (req, res) => {
         // 필요에 따라 추가 정보 포함 가능
       },
       JWT_SECRET,
-      { expiresIn: "30d" } // 토큰 유효 기간 설정
+      { expiresIn: remember_me ? "30d" : "24h" } // 자동 로그인 시 토큰 유효기간 연장
     );
 
     // 로그인 성공 응답
@@ -103,10 +103,10 @@ router.post("/", async (req, res) => {
       success: true,
       message: "로그인 성공",
       token,
+      remember_me: remember_me || false, // remember_me 값 응답에 포함
       user: {
         user_id: user.user_id,
         // 필요한 사용자 정보만 선택적으로 전달
-        // 비밀번호는 제외
       },
     });
   } catch (error) {

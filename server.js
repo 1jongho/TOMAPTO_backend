@@ -10,6 +10,7 @@ const profileRoutes = require("./account/profile"); // profile.js 파일 추가
 const logoutRoutes = require("./account/logout"); // logout.js 파일 추가
 const locationRoutes = require("./routes/location"); // location.js 파일 추가 (위치 관련)
 const db = require("./db.js"); // db.js 파일도 함께 실행
+//const emailVerificationRoutes = require("./account/email_verification");
 
 // 미들웨어 설정
 app.use(
@@ -40,9 +41,9 @@ app.use("/api/account", accountRoutes);
 app.use("/api/account/login", loginRoutes); // 로그인 라우트
 app.use("/api/account/profile", profileRoutes); // 프로필 라우트
 app.use("/api/account/logout", logoutRoutes); // 로그아웃 라우트 추가
-app.use("/api/location", locationRoutes); // 위치 관련 라우트 추가
+//app.use("/api/account/verification", emailVerificationRoutes); // 이메일 인증 라우트 추가
 
 // 서버 시작
-app.listen(8080, "0.0.0.0", () => {
+app.listen(8080, process.env.IP, () => {
   console.log("http://localhost:8080 에서 서버 실행중");
 });
