@@ -1,4 +1,4 @@
-// account/email-verification.js
+// account/email_verification.js
 require("dotenv").config();
 const express = require("express");
 const router = express.Router();
@@ -10,20 +10,16 @@ const crypto = require("crypto");
 console.log("이메일 환경 변수 확인:");
 console.log("EMAIL_USER:", process.env.EMAIL_USER ? "설정됨" : "설정되지 않음");
 console.log(
-  "EMAIL_PASSWORD:",
-  process.env.EMAIL_PASSWORD ? "설정됨" : "설정되지 않음"
+  "EMAIL_APP_PASSWORD:",
+  process.env.EMAIL_APP_PASSWORD ? "설정됨" : "설정되지 않음"
 );
 
 // 이메일 발송을 위한 nodemailer 설정 (Gmail 앱 비밀번호 사용)
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    type: "OAuth2",
     user: process.env.EMAIL_USER,
-    clientId: process.env.CLIENT_ID,
-    clientSecret: process.env.CLIENT_SECRET,
-    refreshToken: process.env.REFRESH_TOKEN,
-    accessToken: process.env.ACCESS_TOKEN,
+    pass: process.env.EMAIL_APP_PASSWORD, // Gmail 앱 비밀번호
   },
 });
 
@@ -31,6 +27,10 @@ const transporter = nodemailer.createTransport({
 transporter.verify(function (error, success) {
   if (error) {
     console.error("SMTP 서버 연결 오류:", error);
+    console.error("오류 코드:", error.code);
+    console.error("오류 명령:", error.command);
+    console.error("오류 응답:", error.response);
+    console.error("오류 메시지:", error.message);
   } else {
     console.log("SMTP 서버 연결 성공, 이메일 발송 준비 완료");
   }
@@ -94,6 +94,8 @@ router.post("/send-verification", async (req, res) => {
     const verificationCode = generateVerificationCode();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5분 후 만료
 
+    console.log(`인증 코드 생성: ${email} - 코드: ${verificationCode}`);
+
     // 기존 인증 코드가 있는지 확인 및 업데이트 또는 생성
     db.query(
       "SELECT * FROM verification_codes WHERE email = ?",
@@ -107,6 +109,7 @@ router.post("/send-verification", async (req, res) => {
         try {
           if (results.length > 0) {
             // 기존 코드 업데이트
+            console.log(`기존 인증 코드 업데이트: ${email}`);
             await new Promise((resolve, reject) => {
               db.query(
                 "UPDATE verification_codes SET code = ?, expires_at = ?, verified = false WHERE email = ?",
@@ -123,6 +126,7 @@ router.post("/send-verification", async (req, res) => {
             });
           } else {
             // 새 코드 생성
+            console.log(`새 인증 코드 생성: ${email}`);
             await new Promise((resolve, reject) => {
               db.query(
                 "INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)",
@@ -224,7 +228,7 @@ router.post("/verify-code", (req, res) => {
 
         // 인증 상태 업데이트
         db.query(
-          "UPDATE verification_codes SET verified = true WHERE email = ?",
+          "UPDATE verification_codes SET verified = true, verified_at = NOW() WHERE email = ?",
           [email],
           (err) => {
             if (err) {

@@ -1,15 +1,17 @@
-// server.js
 require("dotenv").config();
 const bodyParser = require("body-parser");
 const express = require("express");
 const cors = require("cors");
 const app = express();
-const accountRoutes = require("./account/signup"); // signup.js 파일도 함께 실행
-const loginRoutes = require("./account/login"); // login.js 파일 추가
-const profileRoutes = require("./account/profile"); // profile.js 파일 추가
-const logoutRoutes = require("./account/logout"); // logout.js 파일 추가
-const db = require("./db.js"); // db.js 파일도 함께 실행
-//const emailVerificationRoutes = require("./account/email_verification");
+
+const accountRoutes = require("./account/signup");
+const loginRoutes = require("./account/login");
+const profileRoutes = require("./account/profile");
+const logoutRoutes = require("./account/logout");
+const emailVerificationRoutes = require("./account/email_verification");
+
+const locationRoutes = require("./routes/location"); // location.js 파일 추가 (위치 관련)
+const friendsRoutes = require("./routes/friends"); // friends.js 파일 추가 (친구 관련)
 
 // 미들웨어 설정
 app.use(
@@ -40,7 +42,18 @@ app.use("/api/account", accountRoutes);
 app.use("/api/account/login", loginRoutes); // 로그인 라우트
 app.use("/api/account/profile", profileRoutes); // 프로필 라우트
 app.use("/api/account/logout", logoutRoutes); // 로그아웃 라우트 추가
-//app.use("/api/account/verification", emailVerificationRoutes); // 이메일 인증 라우트 추가
+app.use("/api/account/verification", emailVerificationRoutes); // 이메일 인증 라우트 추가
+
+// 위치 관련 라우트 설정
+app.use("/api/location", locationRoutes);
+app.use("/api/friends", friendsRoutes); // 친구 라우트
+
+// HTTP 서버 생성 및 소켓 서버 설정
+const server = require("http").createServer(app);
+const initSocketServer = require("./socket"); // socket.js 파일 가져오기
+
+// 소켓 서버 초기화
+const io = initSocketServer(server);
 
 // 서버 시작
 app.listen(8080, process.env.IP, () => {
