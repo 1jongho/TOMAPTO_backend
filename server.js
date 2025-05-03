@@ -56,6 +56,6 @@ const initSocketServer = require("./socket"); // socket.js 파일 가져오기
 const io = initSocketServer(server);
 
 // 서버 시작
-app.listen(8080, process.env.IP, () => {
+server.listen(8080, process.env.IP || '0.0.0.0', () => {
   console.log("http://localhost:8080 에서 서버 실행중");
 });
