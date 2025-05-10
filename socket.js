@@ -125,6 +125,8 @@ function initSocketServer(server) {
       if (!request_id) {
         return socket.emit('error', { message: '요청 ID가 필요합니다.' });
       }
+
+      const requestIdStr = String(request_id);
       
       // 요청 정보 가져오기
       const sql = `
