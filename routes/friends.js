@@ -63,7 +63,7 @@ router.get('/search', auth, (req, res) => {
       const placeholders = userIds.map(() => '?').join(',');
       
       const requestSQL = `
-        SELECT fr.sender_id, fr.recipient_id, fr.request_status
+        SELECT fr.sender_id, fr.recipient_id, fr.request_status, fr.request_id
         FROM FriendRequests fr
         WHERE (fr.sender_id = ? AND fr.recipient_id IN (${placeholders}))
         OR (fr.recipient_id = ? AND fr.sender_id IN (${placeholders}))
@@ -109,10 +109,12 @@ router.get('/search', auth, (req, res) => {
             if (outgoingRequest) {
               userData.request_sent = true;
               userData.request_status = outgoingRequest.request_status;
+              userData.request_id = outgoingRequest.request_id;
             }
             if (incomingRequest) {
               userData.request_received = true;
               userData.request_status = incomingRequest.request_status;
+              userData.request_id = incomingRequest.request_id;
             }
             
             // 친구 관계 상태 확인
@@ -378,6 +380,43 @@ router.post('/request/:requestId/reject', auth, (req, res) => {
   });
 });
 
+// 친구 요청 취소 API (추가)
+router.delete('/request/:requestId', auth, (req, res) => {
+  const requestId = req.params.requestId;
+  const userId = req.user.user_id;
+  
+  // 요청 확인 및 권한 확인
+  const checkRequestSQL = `
+    SELECT * FROM FriendRequests 
+    WHERE request_id = ? AND sender_id = ? AND request_status = 'pending'
+  `;
+  
+  db.query(checkRequestSQL, [requestId, userId], (err, results) => {
+    if (err) {
+      console.error('친구 요청 확인 오류:', err);
+      return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+    }
+    
+    if (results.length === 0) {
+      return res.status(404).json({ error: '취소할 수 있는 요청을 찾을 수 없습니다.' });
+    }
+    
+    // 요청 삭제 또는 상태 변경
+    const deleteRequestSQL = `
+      DELETE FROM FriendRequests WHERE request_id = ?
+    `;
+    
+    db.query(deleteRequestSQL, [requestId], (err) => {
+      if (err) {
+        console.error('친구 요청 취소 오류:', err);
+        return res.status(500).json({ error: '친구 요청 취소에 실패했습니다.' });
+      }
+      
+      res.status(200).json({ message: '친구 요청이 취소되었습니다.' });
+    });
+  });
+});
+
 // 친구 목록 조회 API
 router.get('/list', auth, (req, res) => {
   const userId = req.user.user_id;
@@ -425,6 +464,152 @@ router.get('/list', auth, (req, res) => {
     }));
     
     res.status(200).json({ friends });
+  });
+});
+
+// 친구 삭제 API (추가)
+router.post('/delete', auth, (req, res) => {
+  const { friend_id } = req.body;
+  const user_id = req.user.user_id;
+  
+  if (!friend_id) {
+    return res.status(400).json({ error: '친구 ID가 필요합니다.' });
+  }
+  
+  // 친구 관계 확인
+  const checkFriendshipSQL = `
+    SELECT * FROM Friendships 
+    WHERE ((user_id_1 = ? AND user_id_2 = ?) OR (user_id_1 = ? AND user_id_2 = ?))
+    AND status = 'active'
+  `;
+  
+  db.query(checkFriendshipSQL, [user_id, friend_id, friend_id, user_id], (err, results) => {
+    if (err) {
+      console.error('친구 관계 확인 오류:', err);
+      return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+    }
+    
+    if (results.length === 0) {
+      return res.status(404).json({ error: '친구 관계를 찾을 수 없습니다.' });
+    }
+    
+    const friendship = results[0];
+    
+    // 친구 관계 비활성화
+    const deactivateFriendshipSQL = `
+      UPDATE Friendships 
+      SET status = 'inactive', updated_at = NOW() 
+      WHERE friendship_id = ?
+    `;
+    
+    db.query(deactivateFriendshipSQL, [friendship.friendship_id], (err) => {
+      if (err) {
+        console.error('친구 삭제 오류:', err);
+        return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+      }
+      
+      // 위치 공유 관계가 있다면 종료
+      const terminateSharingSQL = `
+        UPDATE LocationSharing
+        SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+        WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
+        AND status = 'active'
+      `;
+      
+      db.query(terminateSharingSQL, [user_id, friend_id, friend_id, user_id], () => {
+        // 오류가 있어도 무시하고 진행
+        
+        res.status(200).json({ message: '친구 관계가 종료되었습니다.' });
+      });
+    });
+  });
+});
+
+// 친구 차단 API (추가)
+router.post('/block', auth, (req, res) => {
+  const { friend_id } = req.body;
+  const user_id = req.user.user_id;
+  
+  if (!friend_id) {
+    return res.status(400).json({ error: '친구 ID가 필요합니다.' });
+  }
+  
+  // 친구 관계 확인
+  const checkFriendshipSQL = `
+    SELECT * FROM Friendships 
+    WHERE ((user_id_1 = ? AND user_id_2 = ?) OR (user_id_1 = ? AND user_id_2 = ?))
+  `;
+  
+  db.query(checkFriendshipSQL, [user_id, friend_id, friend_id, user_id], (err, results) => {
+    if (err) {
+      console.error('친구 관계 확인 오류:', err);
+      return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+    }
+    
+    if (results.length > 0) {
+      // 이미 친구 관계가 있는 경우, 차단 처리
+      const friendship = results[0];
+      let blockSQL;
+      
+      // user_id_1이 차단하는 경우와 user_id_2가 차단하는 경우를 구분
+      if (friendship.user_id_1 === user_id) {
+        blockSQL = `
+          UPDATE Friendships 
+          SET is_blocked_by_user_1 = 1, status = 'inactive', updated_at = NOW() 
+          WHERE friendship_id = ?
+        `;
+      } else {
+        blockSQL = `
+          UPDATE Friendships 
+          SET is_blocked_by_user_2 = 1, status = 'inactive', updated_at = NOW() 
+          WHERE friendship_id = ?
+        `;
+      }
+      
+      db.query(blockSQL, [friendship.friendship_id], (err) => {
+        if (err) {
+          console.error('친구 차단 오류:', err);
+          return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+        }
+        
+        // 위치 공유 관계가 있다면 종료
+        const terminateSharingSQL = `
+          UPDATE LocationSharing
+          SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+          WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
+          AND status = 'active'
+        `;
+        
+        db.query(terminateSharingSQL, [user_id, friend_id, friend_id, user_id], () => {
+          // 오류가 있어도 무시하고 진행
+          
+          res.status(200).json({ message: '사용자가 차단되었습니다.' });
+        });
+      });
+    } else {
+      // 친구 관계가 없는 경우, 새로운 차단 관계 생성
+      const createBlockSQL = `
+        INSERT INTO Friendships (user_id_1, user_id_2, friendship_type, status, is_blocked_by_user_1, is_blocked_by_user_2, created_at, updated_at)
+        VALUES (?, ?, 'blocked', 'inactive', ?, ?, NOW(), NOW())
+      `;
+      
+      // user_id_1은 항상 더 작은 ID로 설정 (일관성 유지)
+      const [smallerId, largerId] = user_id < friend_id ? 
+        [user_id, friend_id] : [friend_id, user_id];
+      
+      // 작은 ID가 차단했는지, 큰 ID가 차단했는지 설정
+      const isBlockedByUser1 = smallerId === user_id ? 1 : 0;
+      const isBlockedByUser2 = largerId === user_id ? 1 : 0;
+      
+      db.query(createBlockSQL, [smallerId, largerId, isBlockedByUser1, isBlockedByUser2], (err) => {
+        if (err) {
+          console.error('차단 관계 생성 오류:', err);
+          return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+        }
+        
+        res.status(200).json({ message: '사용자가 차단되었습니다.' });
+      });
+    }
   });
 });
 
