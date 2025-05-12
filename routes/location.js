@@ -222,8 +222,6 @@ router.post('/share', auth, (req, res) => {
     const checkActiveSharingSQL = `
       SELECT * FROM LocationSharing 
       WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
-      AND status = 'active'
-      AND (end_time IS NULL OR end_time > NOW())
     `;
 
     db.query(checkActiveSharingSQL, [user_id, friend_id, friend_id, user_id], (err, activeSharingResult) => {
@@ -238,40 +236,51 @@ router.post('/share', auth, (req, res) => {
         const now = new Date();
         endTime = new Date(now.getTime() + duration_minutes * 60000); // 밀리초로 변환
       }
-
-      let sql, params;
       
       if (activeSharingResult.length > 0) {
         // 이미 활성화된 위치 공유가 있으면 업데이트
         const sharingId = activeSharingResult[0].sharing_id;
-        sql = `
+        const updateSQL = `
           UPDATE LocationSharing 
-          SET end_time = ?, updated_at = NOW() 
+          SET status = 'active', end_time = ?, updated_at = NOW() 
           WHERE sharing_id = ?
         `;
-        params = [endTime, sharingId];
+        
+        db.query(updateSQL, [endTime, sharingId], (err, result) => {
+          if (err) {
+            console.error('위치 공유 업데이트 오류:', err);
+            return res.status(500).json({ error: '위치 공유 설정에 실패했습니다.' });
+          }
+          
+          res.status(200).json({ 
+            success: true,
+            message: '위치 공유가 설정되었습니다.',
+            duration_minutes: duration_minutes,
+            end_time: endTime ? endTime.toISOString() : null
+          });
+        });
       } else {
-        // 새 위치 공유 생성
-        sql = `
+        // 새 위치 공유 생성 (ON DUPLICATE KEY UPDATE 사용)
+        const insertSQL = `
           INSERT INTO LocationSharing (sharer_id, sharee_id, status, start_time, end_time, created_at, updated_at) 
           VALUES (?, ?, 'active', NOW(), ?, NOW(), NOW())
+          ON DUPLICATE KEY UPDATE status = 'active', end_time = ?, updated_at = NOW()
         `;
-        params = [user_id, friend_id, endTime];
-      }
-
-      db.query(sql, params, (err, result) => {
-        if (err) {
-          console.error('위치 공유 설정 실패:', err);
-          return res.status(500).json({ error: '위치 공유 설정에 실패했습니다.' });
-        }
-
-        res.status(200).json({ 
-          success: true,
-          message: '위치 공유가 설정되었습니다.',
-          duration_minutes: duration_minutes,
-          end_time: endTime ? endTime.toISOString() : null
+        
+        db.query(insertSQL, [user_id, friend_id, endTime, endTime], (err, result) => {
+          if (err) {
+            console.error('위치 공유 생성 오류:', err);
+            return res.status(500).json({ error: '위치 공유 설정에 실패했습니다.' });
+          }
+          
+          res.status(200).json({ 
+            success: true,
+            message: '위치 공유가 설정되었습니다.',
+            duration_minutes: duration_minutes,
+            end_time: endTime ? endTime.toISOString() : null
+          });
         });
-      });
+      }
     });
   });
 });
@@ -285,24 +294,41 @@ router.post('/end-sharing', auth, (req, res) => {
     return res.status(400).json({ error: '친구 ID는 필수 입력값입니다.' });
   }
 
-  const sql = `
-    UPDATE LocationSharing
-    SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+  // 먼저 현재의 공유 상태를 확인
+  const checkSharingSQL = `
+    SELECT * FROM LocationSharing
     WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
-    AND status = 'active'
   `;
-
-  db.query(sql, [user_id, friend_id, friend_id, user_id], (err, result) => {
+  
+  db.query(checkSharingSQL, [user_id, friend_id, friend_id, user_id], (err, sharingResults) => {
     if (err) {
-      console.error('위치 공유 종료 실패:', err);
-      return res.status(500).json({ error: '위치 공유 종료에 실패했습니다.' });
+      console.error('위치 공유 상태 확인 오류:', err);
+      return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
     }
     
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: '활성화된 위치 공유가 없습니다.' });
+    if (sharingResults.length === 0) {
+      return res.status(404).json({ error: '위치 공유 관계를 찾을 수 없습니다.' });
     }
-    
-    res.status(200).json({ message: '위치 공유가 종료되었습니다.' });
+
+    // 위치 공유 관계 비활성화 (status 조건 제거)
+    const sql = `
+      UPDATE LocationSharing
+      SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+      WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
+    `;
+
+    db.query(sql, [user_id, friend_id, friend_id, user_id], (err, result) => {
+      if (err) {
+        console.error('위치 공유 종료 실패:', err);
+        return res.status(500).json({ error: '위치 공유 종료에 실패했습니다.' });
+      }
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: '위치 공유 종료 실패: 업데이트된 레코드가 없습니다.' });
+      }
+      
+      res.status(200).json({ message: '위치 공유가 종료되었습니다.' });
+    });
   });
 });
 

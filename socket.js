@@ -209,7 +209,7 @@ function initSocketServer(server) {
       });
     });
     
-    // 위치 공유 시작 이벤트 처리
+    // 위치 공유 시작 이벤트 처리 (수정된 부분)
     socket.on('start_location_sharing', (data) => {
       const { friend_id, duration_minutes } = data;
       
@@ -217,24 +217,98 @@ function initSocketServer(server) {
         return socket.emit('error', { message: '친구 ID는 필수 입력값입니다.' });
       }
       
-      // 친구 소켓 ID 확인
-      const friendSocketId = connectedUsers.get(friend_id);
+      // 먼저 이미 활성화된 위치 공유가 있는지 확인
+      const checkSharingSQL = `
+        SELECT * FROM LocationSharing 
+        WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
+      `;
       
-      // 친구가 온라인이면 실시간 알림
-      if (friendSocketId) {
-        io.to(friendSocketId).emit('location_sharing_started', {
-          user_id: userId,
-          user_name: socket.user.name,
-          user_nickname: socket.user.nickname,
-          duration_minutes,
-          timestamp: new Date()
-        });
-      }
-      
-      socket.emit('location_sharing_started_success', {
-        friend_id,
-        duration_minutes,
-        timestamp: new Date()
+      db.query(checkSharingSQL, [userId, friend_id, friend_id, userId], (err, existingResults) => {
+        if (err) {
+          console.error('위치 공유 상태 확인 오류:', err);
+          return socket.emit('error', { message: '서버 오류가 발생했습니다.' });
+        }
+        
+        let endTime = null;
+        if (duration_minutes) {
+          // 현재 시간에 duration_minutes 분을 더해서 종료 시간 계산
+          const now = new Date();
+          endTime = new Date(now.getTime() + duration_minutes * 60000); // 밀리초로 변환
+        }
+        
+        // mysql2 모듈에서는 connection 객체에 beginTransaction이 있지만
+        // pool에는 없으므로 직접 수행합니다
+        
+        if (existingResults.length > 0) {
+          // 기존 레코드가 있는 경우 업데이트
+          const existingRecord = existingResults[0];
+          const updateSharingSQL = `
+            UPDATE LocationSharing 
+            SET status = 'active', end_time = ?, updated_at = NOW() 
+            WHERE sharing_id = ?
+          `;
+          
+          db.query(updateSharingSQL, [endTime, existingRecord.sharing_id], (err, result) => {
+            if (err) {
+              console.error('위치 공유 업데이트 오류:', err);
+              return socket.emit('error', { message: '위치 공유 설정에 실패했습니다.' });
+            }
+            
+            // 친구 소켓 ID 확인
+            const friendSocketId = connectedUsers.get(friend_id);
+            
+            // 친구가 온라인이면 실시간 알림
+            if (friendSocketId) {
+              io.to(friendSocketId).emit('location_sharing_started', {
+                user_id: userId,
+                user_name: socket.user.name,
+                user_nickname: socket.user.nickname,
+                duration_minutes,
+                timestamp: new Date()
+              });
+            }
+            
+            socket.emit('location_sharing_started_success', {
+              friend_id,
+              duration_minutes,
+              timestamp: new Date()
+            });
+          });
+        } else {
+          // 새 레코드 추가 (ON DUPLICATE KEY UPDATE 구문 사용)
+          const insertSharingSQL = `
+            INSERT INTO LocationSharing (sharer_id, sharee_id, status, start_time, end_time, created_at, updated_at) 
+            VALUES (?, ?, 'active', NOW(), ?, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE status = 'active', end_time = ?, updated_at = NOW()
+          `;
+          
+          db.query(insertSharingSQL, [userId, friend_id, endTime, endTime], (err, result) => {
+            if (err) {
+              console.error('위치 공유 생성 오류:', err);
+              return socket.emit('error', { message: '위치 공유 설정에 실패했습니다.' });
+            }
+            
+            // 친구 소켓 ID 확인
+            const friendSocketId = connectedUsers.get(friend_id);
+            
+            // 친구가 온라인이면 실시간 알림
+            if (friendSocketId) {
+              io.to(friendSocketId).emit('location_sharing_started', {
+                user_id: userId,
+                user_name: socket.user.name,
+                user_nickname: socket.user.nickname,
+                duration_minutes,
+                timestamp: new Date()
+              });
+            }
+            
+            socket.emit('location_sharing_started_success', {
+              friend_id,
+              duration_minutes,
+              timestamp: new Date()
+            });
+          });
+        }
       });
     });
     
@@ -246,20 +320,55 @@ function initSocketServer(server) {
         return socket.emit('error', { message: '친구 ID는 필수 입력값입니다.' });
       }
       
-      // 친구 소켓 ID 확인
-      const friendSocketId = connectedUsers.get(friend_id);
+      // 먼저 현재의 공유 상태를 확인
+      const checkSharingSQL = `
+        SELECT * FROM LocationSharing
+        WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
+      `;
       
-      // 친구가 온라인이면 실시간 알림
-      if (friendSocketId) {
-        io.to(friendSocketId).emit('location_sharing_stopped', {
-          user_id: userId,
-          timestamp: new Date()
+      db.query(checkSharingSQL, [userId, friend_id, friend_id, userId], (err, sharingResults) => {
+        if (err) {
+          console.error('위치 공유 상태 확인 오류:', err);
+          return socket.emit('error', { message: '서버 오류가 발생했습니다.' });
+        }
+        
+        if (sharingResults.length === 0) {
+          return socket.emit('error', { message: '위치 공유 관계를 찾을 수 없습니다.' });
+        }
+        
+        // 위치 공유 관계 비활성화 (status 조건 제거)
+        const terminateSharingSQL = `
+          UPDATE LocationSharing
+          SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+          WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
+        `;
+        
+        db.query(terminateSharingSQL, [userId, friend_id, friend_id, userId], (err, result) => {
+          if (err) {
+            console.error('위치 공유 종료 오류:', err);
+            return socket.emit('error', { message: '위치 공유 종료에 실패했습니다.' });
+          }
+          
+          if (result.affectedRows === 0) {
+            return socket.emit('error', { message: '위치 공유 종료 실패: 업데이트된 레코드가 없습니다.' });
+          }
+          
+          // 친구 소켓 ID 확인
+          const friendSocketId = connectedUsers.get(friend_id);
+          
+          // 친구가 온라인이면 실시간 알림
+          if (friendSocketId) {
+            io.to(friendSocketId).emit('location_sharing_stopped', {
+              user_id: userId,
+              timestamp: new Date()
+            });
+          }
+          
+          socket.emit('location_sharing_stopped_success', {
+            friend_id,
+            timestamp: new Date()
+          });
         });
-      }
-      
-      socket.emit('location_sharing_stopped_success', {
-        friend_id,
-        timestamp: new Date()
       });
     });
     
