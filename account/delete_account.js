@@ -1,303 +1,414 @@
-// account/delete_account.js
+// account/password_reset.js
 require("dotenv").config();
 const express = require("express");
 const router = express.Router();
 const db = require("../db.js");
-const crypto = require("crypto"); // SHA-256 해시를 위한 내장 모듈
-const { auth } = require("../routes/auth");
+const nodemailer = require("nodemailer");
+const bcrypt = require("bcrypt");
 
-// SHA-256 해시 함수 (signup.js와 동일)
-function sha256Hash(password) {
-  return crypto.createHash("sha256").update(password).digest("hex");
+// 기존 email_verification.js와 동일한 nodemailer 설정
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_APP_PASSWORD,
+  },
+});
+
+// 인증 코드 생성 함수 (기존과 동일)
+function generateVerificationCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// 회원탈퇴 처리 라우트
-router.post("/", auth, async (req, res) => {
+// 비밀번호 유효성 검사 함수 (추가됨)
+function validatePassword(password) {
+  // 비밀번호 규칙: 8자 이상, 문자 포함, 숫자 포함
+  const hasMinLength = password.length >= 8;
+  const hasLetter = /[a-zA-Z]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  
+  return {
+    isValid: hasMinLength && hasLetter && hasNumber,
+    hasMinLength,
+    hasLetter,
+    hasNumber
+  };
+}
+
+// 비밀번호 재설정용 인증 코드 발송
+router.post("/send-reset-code", async (req, res) => {
   try {
-    const { password, reason } = req.body;
-    const userId = req.user.user_id;
+    const { user_id, email } = req.body;
 
-    console.log(`회원탈퇴 요청 - 사용자 ID: ${userId}`);
-
-    if (!password) {
-      return res.status(400).json({ message: "비밀번호를 입력해주세요." });
+    if (!user_id || !email) {
+      return res.status(400).json({ 
+        message: "아이디와 이메일 주소가 필요합니다." 
+      });
     }
 
-    // 1. 사용자 정보 및 비밀번호 검증
+    // 아이디와 이메일이 일치하는 사용자 확인
     db.query(
-      "SELECT * FROM users WHERE user_id = ?",
-      [userId],
+      "SELECT * FROM users WHERE user_id = ? AND user_email = ?",
+      [user_id, email],
       async (err, results) => {
         if (err) {
-          console.error("사용자 정보 조회 오류:", err);
-          return res.status(500).json({ message: "서버 오류가 발생했습니다." });
+          console.error("데이터베이스 오류:", err);
+          return res.status(500).json({ 
+            message: "서버 오류가 발생했습니다." 
+          });
         }
 
         if (results.length === 0) {
-          console.error(`사용자를 찾을 수 없음 - ID: ${userId}`);
-          return res.status(404).json({ message: "사용자를 찾을 수 없습니다." });
+          return res.status(400).json({ 
+            message: "일치하는 회원 정보를 찾을 수 없습니다." 
+          });
         }
 
-        const user = results[0];
-        
-        // SHA-256으로 입력된 비밀번호 해시화
-        const hashedInputPassword = sha256Hash(password);
-        
-        console.log(`=== 상세 비밀번호 검증 디버깅 ===`);
-        console.log(`- 원본 입력 비밀번호: "${password}"`);
-        console.log(`- 입력 비밀번호 길이: ${password.length}`);
-        console.log(`- 입력 비밀번호 타입: ${typeof password}`);
-        console.log(`- 입력된 비밀번호 해시: ${hashedInputPassword}`);
-        console.log(`- 저장된 비밀번호 해시: ${user.user_password}`);
-        console.log(`- 해시 길이 비교: 입력=${hashedInputPassword.length}, 저장=${user.user_password.length}`);
-        console.log(`- 해시 일치 여부: ${hashedInputPassword === user.user_password}`);
-        console.log(`- 문자열 비교 (===): ${hashedInputPassword === user.user_password}`);
-        console.log(`- 문자열 비교 (==): ${hashedInputPassword == user.user_password}`);
-        
-        // 각 문자별로 비교해보기
-        if (hashedInputPassword !== user.user_password) {
-          console.log(`=== 문자별 비교 ===`);
-          const minLength = Math.min(hashedInputPassword.length, user.user_password.length);
-          for (let i = 0; i < minLength; i++) {
-            if (hashedInputPassword[i] !== user.user_password[i]) {
-              console.log(`첫 번째 차이점 - 위치 ${i}: 입력="${hashedInputPassword[i]}" vs 저장="${user.user_password[i]}"`);
-              break;
-            }
-          }
-          
-          // 실제 데이터베이스의 사용자 정보도 확인
-          console.log(`=== 사용자 정보 확인 ===`);
-          console.log(`- 사용자 ID: ${user.user_id}`);
-          console.log(`- 사용자 이메일: ${user.user_email}`);
-          
-          // 다시 한 번 해시 생성해서 확인
-          const reHashedPassword = sha256Hash(password);
-          console.log(`- 재생성된 해시: ${reHashedPassword}`);
-          console.log(`- 재생성 해시 일치: ${reHashedPassword === hashedInputPassword}`);
-          
-          console.log(`비밀번호 불일치 - 사용자 ID: ${userId}`);
-          return res.status(401).json({ message: "비밀번호가 일치하지 않습니다." });
-        }
+        // 인증 코드 생성
+        const verificationCode = generateVerificationCode();
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5분 후 만료
 
-        console.log(`비밀번호 검증 성공 - 사용자 ID: ${userId}`);
+        console.log(`비밀번호 재설정 코드 생성: ${email} - 코드: ${verificationCode}`);
 
-        // 2. 트랜잭션 시작
-        db.getConnection((err, connection) => {
-          if (err) {
-            console.error("DB 연결 오류:", err);
-            return res.status(500).json({ message: "서버 오류가 발생했습니다." });
-          }
-
-          connection.beginTransaction(async (err) => {
+        // 기존 인증 코드가 있는지 확인 및 업데이트 또는 생성
+        db.query(
+          "SELECT * FROM verification_codes WHERE email = ?",
+          [email],
+          async (err, codeResults) => {
             if (err) {
-              console.error("트랜잭션 시작 오류:", err);
-              connection.release();
+              console.error("데이터베이스 오류:", err);
               return res.status(500).json({ message: "서버 오류가 발생했습니다." });
             }
 
             try {
-              // 3. 탈퇴 사유 로그 기록
-              if (reason) {
-                console.log(`탈퇴 사유 - 사용자 ID: ${userId}, 사유: ${reason}`);
+              if (codeResults.length > 0) {
+                // 기존 코드 업데이트
+                console.log(`기존 인증 코드 업데이트: ${email}`);
+                await new Promise((resolve, reject) => {
+                  db.query(
+                    "UPDATE verification_codes SET code = ?, expires_at = ?, verified = 0 WHERE email = ?",
+                    [verificationCode, expiresAt, email],
+                    (err) => {
+                      if (err) {
+                        console.error("인증 코드 업데이트 오류:", err);
+                        reject(err);
+                        return;
+                      }
+                      resolve();
+                    }
+                  );
+                });
+              } else {
+                // 새 코드 생성
+                console.log(`새 인증 코드 생성: ${email}`);
+                await new Promise((resolve, reject) => {
+                  db.query(
+                    "INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)",
+                    [email, verificationCode, expiresAt],
+                    (err) => {
+                      if (err) {
+                        console.error("인증 코드 저장 오류:", err);
+                        reject(err);
+                        return;
+                      }
+                      resolve();
+                    }
+                  );
+                });
               }
 
-              // 4. 친구 요청 데이터 삭제
+              // 이메일 발송
+              const mailOptions = {
+                from: `"비밀번호 재설정" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: "비밀번호 재설정 인증 코드",
+                html: `
+                  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2>비밀번호 재설정 인증 코드</h2>
+                    <p>안녕하세요! 비밀번호 재설정을 위한 인증 코드입니다:</p>
+                    <div style="background-color: #f0f0f0; padding: 15px; font-size: 24px; text-align: center; letter-spacing: 5px; font-weight: bold; border-radius: 4px; margin: 20px 0;">
+                      ${verificationCode}
+                    </div>
+                    <p>아이디: <strong>${user_id}</strong></p>
+                    <p>이 코드는 5분 후에 만료됩니다.</p>
+                    <p>이 이메일을 요청하지 않았다면 무시하셔도 됩니다.</p>
+                  </div>
+                `,
+              };
+
+              // Promise로 이메일 전송 래핑
               await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM friendrequests WHERE sender_id = ? OR recipient_id = ?",
-                  [userId, userId],
+                transporter.sendMail(mailOptions, (err, info) => {
+                  if (err) {
+                    console.error("이메일 발송 오류:", err);
+                    reject(err);
+                    return;
+                  }
+                  console.log("비밀번호 재설정 메일 발송 성공:", info.messageId);
+                  resolve(info);
+                });
+              });
+
+              res.status(200).json({
+                message: "비밀번호 재설정 인증 코드가 이메일로 발송되었습니다.",
+                emailSent: true,
+              });
+
+            } catch (error) {
+              console.error("비밀번호 재설정 처리 중 오류:", error);
+              res.status(500).json({
+                message: "이메일 발송에 실패했습니다.",
+                error: error.message,
+              });
+            }
+          }
+        );
+      }
+    );
+  } catch (error) {
+    console.error("비밀번호 재설정 요청 중 오류:", error);
+    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+  }
+});
+
+// 비밀번호 재설정 인증 코드 확인 (기존 verify-code와 동일하지만 사용자 확인 추가)
+router.post("/verify-reset-code", async (req, res) => {
+  try {
+    const { user_id, email, code } = req.body;
+
+    if (!user_id || !email || !code) {
+      return res.status(400).json({ 
+        message: "아이디, 이메일, 인증 코드가 필요합니다." 
+      });
+    }
+
+    console.log(`비밀번호 재설정 인증 시도: 아이디 = ${user_id}, 이메일 = ${email}, 코드 = ${code}`);
+
+    // 아이디와 이메일이 일치하는지 다시 확인
+    db.query(
+      "SELECT * FROM users WHERE user_id = ? AND user_email = ?",
+      [user_id, email],
+      (err, userResults) => {
+        if (err) {
+          console.error("데이터베이스 오류:", err);
+          return res.status(500).json({ message: "서버 오류가 발생했습니다." });
+        }
+
+        if (userResults.length === 0) {
+          return res.status(400).json({
+            message: "일치하는 회원 정보를 찾을 수 없습니다.",
+            verified: false,
+          });
+        }
+
+        // 데이터베이스에서 인증 코드 확인 (기존 verify-code 로직과 동일)
+        db.query(
+          "SELECT * FROM verification_codes WHERE email = ? AND code = ? AND expires_at > NOW()",
+          [email, code],
+          (err, codeResults) => {
+            if (err) {
+              console.error("인증 코드 확인 오류:", err);
+              return res.status(500).json({ message: "서버 오류가 발생했습니다." });
+            }
+
+            console.log(`비밀번호 재설정 인증 조회 결과: ${codeResults.length}개 항목 찾음`);
+
+            if (codeResults.length === 0) {
+              return res.status(400).json({
+                message: "유효하지 않거나 만료된 인증 코드입니다.",
+                verified: false,
+              });
+            }
+
+            // 인증 상태 업데이트
+            db.query(
+              "UPDATE verification_codes SET verified = 1, verified_at = NOW() WHERE email = ?",
+              [email],
+              (err) => {
+                if (err) {
+                  console.error("인증 상태 업데이트 오류:", err);
+                  return res.status(500).json({ message: "서버 오류가 발생했습니다." });
+                }
+
+                console.log(`비밀번호 재설정 인증 완료: ${email}`);
+                
+                res.status(200).json({
+                  message: "인증이 완료되었습니다.",
+                  verified: true,
+                  user_id: user_id
+                });
+              }
+            );
+          }
+        );
+      }
+    );
+  } catch (error) {
+    console.error("비밀번호 재설정 인증 중 오류:", error);
+    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+  }
+});
+
+// 새 비밀번호 설정 (기존 비밀번호 중복 방지 기능 추가)
+router.post("/reset-password", async (req, res) => {
+  try {
+    const { user_id, email, newPassword } = req.body;
+
+    if (!user_id || !email || !newPassword) {
+      return res.status(400).json({ 
+        message: "필수 정보가 누락되었습니다." 
+      });
+    }
+
+    // 비밀번호 유효성 검사 (강화됨)
+    const validation = validatePassword(newPassword);
+    
+    if (!validation.isValid) {
+      let errorMessage = "비밀번호가 요구사항을 충족하지 않습니다. ";
+      
+      if (!validation.hasMinLength) {
+        errorMessage += "비밀번호는 8자리 이상이어야 합니다. ";
+      }
+      
+      if (!validation.hasLetter) {
+        errorMessage += "최소 하나의 문자를 포함해야 합니다. ";
+      }
+      
+      if (!validation.hasNumber) {
+        errorMessage += "최소 하나의 숫자를 포함해야 합니다.";
+      }
+      
+      return res.status(400).json({
+        message: errorMessage.trim()
+      });
+    }
+
+    // 인증이 완료되었는지 확인
+    db.query(
+      "SELECT * FROM verification_codes WHERE email = ? AND verified = 1",
+      [email],
+      async (err, results) => {
+        if (err) {
+          console.error("인증 상태 확인 오류:", err);
+          return res.status(500).json({ message: "서버 오류가 발생했습니다." });
+        }
+
+        if (results.length === 0) {
+          return res.status(400).json({
+            message: "이메일 인증이 완료되지 않았습니다.",
+          });
+        }
+
+        // 사용자 확인 및 기존 비밀번호 조회
+        db.query(
+          "SELECT * FROM users WHERE user_id = ? AND user_email = ?",
+          [user_id, email],
+          async (err, userResults) => {
+            if (err) {
+              console.error("사용자 확인 오류:", err);
+              return res.status(500).json({ message: "서버 오류가 발생했습니다." });
+            }
+
+            if (userResults.length === 0) {
+              return res.status(400).json({
+                message: "일치하는 회원 정보를 찾을 수 없습니다.",
+              });
+            }
+
+            try {
+              const currentUser = userResults[0];
+              const currentHashedPassword = currentUser.user_password;
+
+              // 새 비밀번호가 기존 비밀번호와 동일한지 확인
+              const isSamePassword = await bcrypt.compare(newPassword, currentHashedPassword);
+              
+              if (isSamePassword) {
+                return res.status(400).json({
+                  message: "기존 비밀번호와 동일한 비밀번호는 사용할 수 없습니다. 새로운 비밀번호를 입력해주세요.",
+                });
+              }
+
+              // 새 비밀번호 해시화
+              const saltRounds = 10;
+              const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+              // 사용자 비밀번호 업데이트
+              await new Promise((resolve, reject) => {
+                db.query(
+                  "UPDATE users SET user_password = ? WHERE user_id = ?",
+                  [hashedPassword, user_id],
                   (err, result) => {
                     if (err) {
-                      console.error("친구 요청 삭제 오류:", err);
+                      console.error("비밀번호 업데이트 오류:", err);
                       reject(err);
                       return;
                     }
-                    console.log(`친구 요청 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
+                    console.log("비밀번호 업데이트 결과:", result);
                     resolve();
                   }
                 );
               });
 
-              // 5. 친구 관계 데이터 삭제
+              // 사용된 인증 코드 삭제
               await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM friendships WHERE user_id_1 = ? OR user_id_2 = ?",
-                  [userId, userId],
-                  (err, result) => {
-                    if (err) {
-                      console.error("친구 관계 삭제 오류:", err);
-                      reject(err);
-                      return;
-                    }
-                    console.log(`친구 관계 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
-                    resolve();
-                  }
-                );
-              });
-
-              // 6. 현재 위치 데이터 삭제
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM location WHERE user_id = ?",
-                  [userId],
-                  (err, result) => {
-                    if (err) {
-                      console.error("위치 데이터 삭제 오류:", err);
-                      reject(err);
-                      return;
-                    }
-                    console.log(`위치 데이터 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
-                    resolve();
-                  }
-                );
-              });
-
-              // 7. 위치 기록 데이터 삭제
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM locationhistory WHERE user_id = ?",
-                  [userId],
-                  (err, result) => {
-                    if (err) {
-                      console.error("위치 기록 삭제 오류:", err);
-                      reject(err);
-                      return;
-                    }
-                    console.log(`위치 기록 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
-                    resolve();
-                  }
-                );
-              });
-
-              // 8. 위치 공유 데이터 삭제
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM locationsharing WHERE sharer_id = ? OR sharee_id = ?",
-                  [userId, userId],
-                  (err, result) => {
-                    if (err) {
-                      console.error("위치 공유 삭제 오류:", err);
-                      reject(err);
-                      return;
-                    }
-                    console.log(`위치 공유 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
-                    resolve();
-                  }
-                );
-              });
-
-              // 9. 위치 조회 로그 삭제
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM locationviewlogs WHERE viewer_id = ? OR viewed_user_id = ?",
-                  [userId, userId],
-                  (err, result) => {
-                    if (err) {
-                      console.error("위치 조회 로그 삭제 오류:", err);
-                      reject(err);
-                      return;
-                    }
-                    console.log(`위치 조회 로그 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
-                    resolve();
-                  }
-                );
-              });
-
-              // 10. 인증 코드 정보 삭제
-              await new Promise((resolve, reject) => {
-                connection.query(
+                db.query(
                   "DELETE FROM verification_codes WHERE email = ?",
-                  [user.user_email],
-                  (err, result) => {
+                  [email],
+                  (err) => {
                     if (err) {
                       console.error("인증 코드 삭제 오류:", err);
                       reject(err);
                       return;
                     }
-                    console.log(`인증 코드 삭제 완료 - 이메일: ${user.user_email}, 삭제된 행: ${result.affectedRows}`);
                     resolve();
                   }
                 );
               });
 
-              // 11. 리프레시 토큰 테이블이 있다면 삭제
-              try {
-                await new Promise((resolve, reject) => {
-                  connection.query(
-                    "DELETE FROM refresh_tokens WHERE user_id = ?",
-                    [userId],
-                    (err, result) => {
-                      if (err) {
-                        if (err.code === 'ER_NO_SUCH_TABLE') {
-                          console.log("리프레시 토큰 테이블이 없습니다. 이 단계를 건너뜁니다.");
-                          resolve();
-                          return;
-                        }
-                        console.error("리프레시 토큰 삭제 오류:", err);
-                        reject(err);
-                        return;
-                      }
-                      console.log(`리프레시 토큰 삭제 완료 - 사용자 ID: ${userId}, 삭제된 행: ${result.affectedRows}`);
-                      resolve();
-                    }
-                  );
-                });
-              } catch (tokenError) {
-                console.log("리프레시 토큰 처리 중 오류 발생, 계속 진행합니다:", tokenError.message);
-              }
+              console.log(`비밀번호 재설정 완료: ${user_id}`);
+              
+              // 성공 이메일 발송 (선택사항)
+              const mailOptions = {
+                from: `"보안 알림" <${process.env.EMAIL_USER}>`,
+                to: email,
+                subject: "비밀번호가 성공적으로 변경되었습니다",
+                html: `
+                  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2>비밀번호 변경 완료</h2>
+                    <p>안녕하세요! 회원님의 비밀번호가 성공적으로 변경되었습니다.</p>
+                    <p>아이디: <strong>${user_id}</strong></p>
+                    <p>변경 시각: ${new Date().toLocaleString('ko-KR')}</p>
+                    <p>본인이 변경하지 않았다면 고객센터로 즉시 연락해주세요.</p>
+                  </div>
+                `,
+              };
 
-              // 12. 최종 사용자 정보 삭제
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  "DELETE FROM users WHERE user_id = ?",
-                  [userId],
-                  (err, result) => {
-                    if (err) {
-                      console.error("사용자 삭제 오류:", err);
-                      reject(err);
-                      return;
-                    }
-                    
-                    if (result.affectedRows === 0) {
-                      const error = new Error("사용자를 삭제할 수 없습니다.");
-                      console.error(error);
-                      reject(error);
-                      return;
-                    }
-                    
-                    console.log(`사용자 삭제 완료 - 사용자 ID: ${userId}`);
-                    resolve();
-                  }
-                );
-              });
-
-              // 트랜잭션 커밋
-              connection.commit((err) => {
+              transporter.sendMail(mailOptions, (err, info) => {
                 if (err) {
-                  console.error("트랜잭션 커밋 오류:", err);
-                  return connection.rollback(() => {
-                    connection.release();
-                    res.status(500).json({ message: "서버 오류가 발생했습니다." });
-                  });
+                  console.error("비밀번호 변경 알림 메일 발송 오류:", err);
+                } else {
+                  console.log("비밀번호 변경 알림 메일 발송 성공:", info.messageId);
                 }
-
-                console.log(`회원탈퇴 처리 완료 - 사용자 ID: ${userId}`);
-                connection.release();
-                res.status(200).json({ message: "회원탈퇴가 완료되었습니다." });
               });
+
+              res.status(200).json({
+                message: "비밀번호가 성공적으로 변경되었습니다.",
+                success: true,
+              });
+
             } catch (error) {
-              console.error("회원탈퇴 처리 중 오류:", error);
-              return connection.rollback(() => {
-                connection.release();
-                res.status(500).json({ message: "회원탈퇴 처리 중 오류가 발생했습니다." });
+              console.error("비밀번호 재설정 처리 중 오류:", error);
+              res.status(500).json({
+                message: "비밀번호 변경에 실패했습니다.",
+                error: error.message,
               });
             }
-          });
-        });
+          }
+        );
       }
     );
   } catch (error) {
-    console.error("회원탈퇴 처리 중 예상치 못한 오류:", error);
+    console.error("비밀번호 재설정 중 오류:", error);
     res.status(500).json({ message: "서버 오류가 발생했습니다." });
   }
 });
