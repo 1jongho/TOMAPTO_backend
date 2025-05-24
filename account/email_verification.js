@@ -509,7 +509,7 @@ router.post("/verify-reset-code", async (req, res) => {
   }
 });
 
-// 새 비밀번호 설정
+// 새 비밀번호 설정 (기존 비밀번호 중복 방지 기능 추가)
 router.post("/reset-password", async (req, res) => {
   try {
     const { user_id, email, newPassword } = req.body;
@@ -543,7 +543,7 @@ router.post("/reset-password", async (req, res) => {
           });
         }
 
-        // 사용자 확인
+        // 사용자 확인 및 기존 비밀번호 조회
         db.query(
           "SELECT * FROM users WHERE user_id = ? AND user_email = ?",
           [user_id, email],
@@ -560,6 +560,18 @@ router.post("/reset-password", async (req, res) => {
             }
 
             try {
+              const currentUser = userResults[0];
+              const currentHashedPassword = currentUser.user_password;
+
+              // 새 비밀번호가 기존 비밀번호와 동일한지 확인
+              const isSamePassword = await bcrypt.compare(newPassword, currentHashedPassword);
+              
+              if (isSamePassword) {
+                return res.status(400).json({
+                  message: "기존 비밀번호와 동일한 비밀번호는 사용할 수 없습니다. 새로운 비밀번호를 입력해주세요.",
+                });
+              }
+
               // 새 비밀번호 해시화
               const saltRounds = 10;
               const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
