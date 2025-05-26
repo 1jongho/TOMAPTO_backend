@@ -6,6 +6,7 @@ const app = express();
 const accountRoutes = require("./account/signup");
 const loginRoutes = require("./account/login");
 const profileRoutes = require("./account/profile");
+const profileEditRoutes = require("./account/profils_edit"); // 프로필 편집 라우트 추가
 const logoutRoutes = require("./account/logout");
 const emailVerificationRoutes = require("./account/email_verification");
 const locationRoutes = require("./routes/location"); // location.js 파일 추가 (위치 관련)
@@ -40,6 +41,7 @@ app.get("/api/account/signup", (req, res) => {
 app.use("/api/account", accountRoutes);
 app.use("/api/account/login", loginRoutes); // 로그인 라우트
 app.use("/api/account/profile", profileRoutes); // 프로필 라우트
+app.use("/api/account/profile-edit", profileEditRoutes); // 프로필 편집 라우트 추가
 app.use("/api/account/logout", logoutRoutes); // 로그아웃 라우트 추가
 app.use("/api/account/verification", emailVerificationRoutes); // 이메일 인증 라우트 추가
 
