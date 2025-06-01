@@ -51,6 +51,7 @@ router.get('/search', auth, (req, res) => {
   }
   
   // 나를 차단한 사용자는 검색 결과에서 제외
+  // 아이디로 검색해도 닉네임을 반환하도록 수정
   const searchSQL = `
     SELECT u.user_id, u.user_name, u.user_nickname 
     FROM Users u
@@ -58,7 +59,7 @@ router.get('/search', auth, (req, res) => {
       (f.user_id_1 = ? AND f.user_id_2 = u.user_id) OR 
       (f.user_id_2 = ? AND f.user_id_1 = u.user_id)
     )
-    WHERE u.user_nickname LIKE ?
+    WHERE (u.user_id LIKE ? OR u.user_name LIKE ? OR u.user_nickname LIKE ?) 
     AND u.user_id != ? 
     AND u.user_status = 'active'
     AND (
@@ -66,17 +67,44 @@ router.get('/search', auth, (req, res) => {
       (f.user_id_1 = u.user_id AND IFNULL(f.is_blocked_by_user_1, 0) = 0) OR
       (f.user_id_2 = u.user_id AND IFNULL(f.is_blocked_by_user_2, 0) = 0)
     )
+    ORDER BY 
+      CASE 
+        WHEN u.user_nickname LIKE ? THEN 1  -- 닉네임 매치 우선순위 1
+        WHEN u.user_id LIKE ? THEN 2         -- 아이디 매치 우선순위 2  
+        WHEN u.user_name LIKE ? THEN 3       -- 이름 매치 우선순위 3
+        ELSE 4 
+      END,
+      u.user_nickname, u.user_id
     LIMIT 20
   `;
   
   // 각 검색어에 와일드카드 추가
-const searchPattern = `%${searchTerm}%`;
-
-db.query(searchSQL, [userId, userId, searchPattern, userId], (err, results) => {
- if (err) {
-   console.error('사용자 검색 오류:', err);
-   return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
- }
+  const searchPattern = `%${searchTerm}%`;
+  
+  // 매개변수 배열 구성 (ORDER BY 절의 LIKE 조건들도 포함)
+  const searchParams = [
+    userId, userId, // LEFT JOIN 조건용
+    searchPattern, searchPattern, searchPattern, // WHERE 조건용
+    userId, // WHERE 조건용 (자기 자신 제외)
+    searchPattern, // ORDER BY 닉네임 매치용
+    searchPattern, // ORDER BY 아이디 매치용  
+    searchPattern  // ORDER BY 이름 매치용
+  ];
+  
+  db.query(searchSQL, searchParams, (err, results) => {
+    if (err) {
+      console.error('사용자 검색 오류:', err);
+      return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
+    }
+    
+    // 검색 결과 로깅 (디버깅용)
+    console.log(`검색어 "${searchTerm}"에 대한 결과 ${results.length}개:`, 
+      results.map(r => ({
+        user_id: r.user_id,
+        user_nickname: r.user_nickname,
+        user_name: r.user_name
+      }))
+    );
     
     // 친구 요청 상태 확인을 위한 추가 쿼리
     if (results.length > 0) {
