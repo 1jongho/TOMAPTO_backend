@@ -474,4 +474,93 @@ router.delete('/:expense_id', authenticateToken, async (req, res) => {
   }
 });
 
+// 지출 수정
+router.put('/:expense_id', authenticateToken, async (req, res) => {
+  try {
+    const { expense_type, amount, description, expense_date } = req.body;
+    const user_id = req.user.user_id;
+    const expense_id = parseInt(req.params.expense_id);
+
+    if (isNaN(expense_id)) {
+      return res.status(400).json({
+        success: false,
+        message: '유효하지 않은 지출 ID입니다.',
+      });
+    }
+
+    // 필수 필드 검증
+    if (!expense_type || !amount || !description || !expense_date) {
+      return res.status(400).json({
+        success: false,
+        message: '모든 필드를 입력해주세요.',
+      });
+    }
+
+    // 지출 유형 검증
+    const validTypes = ['fuel', 'maintenance', 'insurance', 'other'];
+    if (!validTypes.includes(expense_type)) {
+      return res.status(400).json({
+        success: false,
+        message: '유효하지 않은 지출 유형입니다.',
+      });
+    }
+
+    // 금액 검증
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: '유효한 금액을 입력해주세요.',
+      });
+    }
+
+    // 날짜 검증
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(expense_date)) {
+      return res.status(400).json({
+        success: false,
+        message: '유효한 날짜 형식이 아닙니다 (YYYY-MM-DD).',
+      });
+    }
+
+    // 해당 사용자의 지출인지 확인 후 수정
+    const updateSql = `
+        UPDATE car_expenses 
+        SET expense_type = ?, amount = ?, description = ?, expense_date = ?, updated_at = NOW()
+        WHERE expense_id = ? AND user_id = ?
+      `;
+
+    const [result] = await db
+      .promise()
+      .query(updateSql, [
+        expense_type,
+        numAmount,
+        description,
+        expense_date,
+        expense_id,
+        user_id,
+      ]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '수정할 지출을 찾을 수 없습니다.',
+      });
+    }
+
+    console.log(`지출 수정 성공 - 사용자: ${user_id}, 지출ID: ${expense_id}`);
+
+    res.json({
+      success: true,
+      message: '지출이 성공적으로 수정되었습니다.',
+    });
+  } catch (error) {
+    console.error('지출 수정 오류:', error);
+    res.status(500).json({
+      success: false,
+      message: '서버 오류가 발생했습니다.',
+    });
+  }
+});
+
 module.exports = router;
