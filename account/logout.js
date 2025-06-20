@@ -38,23 +38,21 @@ router.post("/", authenticateToken, async (req, res) => {
 
     console.log("로그아웃 요청 받음:", userId);
 
-    // 위치 공유 비활성화 - 로그아웃 시 모든 공유 관계 종료 (추가된 부분)
-    const deactivateSQL = `
-      UPDATE LocationSharing
-      SET status = 'inactive', end_time = NOW(), updated_at = NOW()
-      WHERE sharer_id = ? AND status = 'active'
-    `;
+    // 위치 공유 비활성화 - 로그아웃 시 모든 공유 관계 종료 (updated_at 제거)
+    // const deactivateSQL = `
+    //   UPDATE LocationSharing
+    //   SET status = 'inactive', end_time = NOW()
+    //   WHERE sharer_id = ? AND status = 'active'
+    // `;
 
-    try {
-      await db.promise().query(deactivateSQL, [userId]);
-      console.log(`사용자 ${userId}의 모든 위치 공유 비활성화 완료`);
-    } catch (error) {
-      console.error("위치 공유 비활성화 오류:", error);
-      // 오류가 발생해도 로그아웃 진행
-    }
+    // try {
+    //   await db.promise().query(deactivateSQL, [userId]);
+    //   console.log(`사용자 ${userId}의 모든 위치 공유 비활성화 완료`);
+    // } catch (error) {
+    //   console.error("위치 공유 비활성화 오류:", error);
+      
+    // }
 
-    // 실제 서비스에서는 여기서 토큰 무효화 작업을 수행할 수 있음
-    // 예: 블랙리스트에 토큰 추가, 세션 만료 처리 등
 
     // 성공 응답
     res.json({
