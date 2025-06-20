@@ -13,6 +13,8 @@ const locationRoutes = require('./routes/location'); // location.js 파일 추�
 const friendsRoutes = require('./routes/friends'); // friends.js 파일 추가 (친구 관련)
 const deleteAccountRoutes = require('./account/delete_account');
 const carExpensesRoutes = require('./routes/car_expenses');
+const followRoutes = require("./routes/follow");
+
 
 // 미들웨어 설정
 app.use(
@@ -53,9 +55,9 @@ app.use('/api/account/password-reset', emailVerificationRoutes); // 비밀번호
 app.use('/api/location', locationRoutes);
 app.use('/api/friends', friendsRoutes); // 친구 라우트
 app.use('/api/account/delete', deleteAccountRoutes);
-
-// 차계부 라우트 설정 (새로 추가)
 app.use('/api/car-expenses', carExpensesRoutes);
+app.use("/api/follow", followRoutes);
+
 
 // HTTP 서버 생성 및 소켓 서버 설정
 const server = require('http').createServer(app);
@@ -63,6 +65,9 @@ const initSocketServer = require('./socket'); // socket.js 파일 가져오기
 
 // 소켓 서버 초기화
 const io = initSocketServer(server);
+
+// Express 앱에 io 인스턴스 추가 (follow.js에서 사용하기 위해)
+app.set('io', io);
 
 // 서버 시작
 server.listen(8080, process.env.IP || '0.0.0.0', () => {
