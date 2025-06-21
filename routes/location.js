@@ -1,4 +1,4 @@
-// routes/location.js - 정리된 버전
+// routes/location.js - heading, accuracy만 제거한 원본 유지 버전
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -28,7 +28,7 @@ const auth = (req, res, next) => {
 
 // 위치 업데이트 API
 router.post('/update', auth, (req, res) => {
-  const { latitude, longitude, heading, accuracy } = req.body;
+  const { latitude, longitude } = req.body;
   const user_id = req.user.user_id;
 
   if (!latitude || !longitude) {
@@ -52,18 +52,18 @@ router.post('/update', auth, (req, res) => {
       // 기존 위치 정보 업데이트
       sql = `
         UPDATE Location 
-        SET latitude = ?, longitude = ?, heading = ?, accuracy = ?, updated_at = NOW() 
+        SET latitude = ?, longitude = ?, updated_at = NOW() 
         WHERE user_id = ?
       `;
-      params = [latitude, longitude, heading || null, accuracy || null, user_id];
+      params = [latitude, longitude, user_id];
       console.log(`기존 위치 정보 업데이트 - 사용자: ${user_id}`);
     } else {
       // 새 위치 정보 삽입
       sql = `
-        INSERT INTO Location (user_id, latitude, longitude, heading, accuracy, updated_at) 
-        VALUES (?, ?, ?, ?, ?, NOW())
+        INSERT INTO Location (user_id, latitude, longitude, updated_at) 
+        VALUES (?, ?, ?, NOW())
       `;
-      params = [user_id, latitude, longitude, heading || null, accuracy || null];
+      params = [user_id, latitude, longitude];
       console.log(`새 위치 정보 생성 - 사용자: ${user_id}`);
     }
 
@@ -130,9 +130,9 @@ router.get('/friend/:friendId', auth, (req, res) => {
         return res.status(403).json({ error: '친구가 위치를 공유하고 있지 않습니다.' });
       }
 
-      // 3. 친구의 최신 위치 조회 (location_name 제거)
+      // 3. 친구의 최신 위치 조회
       const getLocationSQL = `
-        SELECT l.user_id, l.latitude, l.longitude, l.accuracy, l.heading, 
+        SELECT l.user_id, l.latitude, l.longitude, 
                l.updated_at, u.user_nickname
         FROM Location l
         JOIN Users u ON l.user_id = u.user_id
