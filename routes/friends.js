@@ -365,10 +365,10 @@ function createOrUpdateFriendship(user1, user2, res) {
         });
       });
     } else {
-      // 새 친구 관계 생성
+      // 새 친구 관계 생성 (friendship_type 필드 제거)
       const createSQL = `
-        INSERT INTO Friendships (user_id_1, user_id_2, friendship_type, status, created_at, updated_at)
-        VALUES (?, ?, 'regular', 'active', NOW(), NOW())
+        INSERT INTO Friendships (user_id_1, user_id_2, status, created_at, updated_at)
+        VALUES (?, ?, 'active', NOW(), NOW())
       `;
       
       db.query(createSQL, [smallerId, largerId], (err) => {
@@ -437,7 +437,7 @@ router.post('/block', auth, (req, res) => {
         // 위치 공유 종료 (차단 시 위치 공유 자동 종료)
         const terminateSharingSQL = `
           UPDATE LocationSharing
-          SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+          SET status = 'inactive', end_time = NOW()
           WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
           AND status = 'active'
         `;
@@ -448,7 +448,7 @@ router.post('/block', auth, (req, res) => {
         });
       });
     } else {
-      // 친구 관계가 없는 경우, 차단된 관계 새로 생성
+      // 친구 관계가 없는 경우, 차단된 관계 새로 생성 (friendship_type 필드 제거)
       const [smallerId, largerId] = user_id < friend_id ? 
         [user_id, friend_id] : [friend_id, user_id];
         
@@ -456,8 +456,8 @@ router.post('/block', auth, (req, res) => {
       const isBlockedByUser2 = largerId === user_id ? 1 : 0;
       
       const insertSQL = `
-        INSERT INTO Friendships (user_id_1, user_id_2, friendship_type, status, is_blocked_by_user_1, is_blocked_by_user_2, created_at, updated_at)
-        VALUES (?, ?, 'regular', 'inactive', ?, ?, NOW(), NOW())
+        INSERT INTO Friendships (user_id_1, user_id_2, status, is_blocked_by_user_1, is_blocked_by_user_2, created_at, updated_at)
+        VALUES (?, ?, 'inactive', ?, ?, NOW(), NOW())
       `;
       
       db.query(insertSQL, [smallerId, largerId, isBlockedByUser1, isBlockedByUser2], (err) => {
@@ -731,12 +731,12 @@ function createOrUpdateFriendshipForAccept(senderId, recipientId, res, senderNam
         });
       });
     } else {
-      // 새 친구 관계 생성
+      // 새 친구 관계 생성 (friendship_type 필드 제거)
       console.log(`새 친구 관계 생성: user_id_1=${smallerId}, user_id_2=${largerId}`);
       
       const createFriendshipSQL = `
-        INSERT INTO Friendships (user_id_1, user_id_2, friendship_type, status, created_at, updated_at)
-        VALUES (?, ?, 'regular', 'active', NOW(), NOW())
+        INSERT INTO Friendships (user_id_1, user_id_2, status, created_at, updated_at)
+        VALUES (?, ?, 'active', NOW(), NOW())
       `;
       
       db.query(createFriendshipSQL, [smallerId, largerId], (err) => {
@@ -971,7 +971,7 @@ router.post('/delete', auth, (req, res) => {
         // 위치 공유 관계가 있다면 종료
         const terminateSharingSQL = `
           UPDATE LocationSharing
-          SET status = 'inactive', end_time = NOW(), updated_at = NOW()
+          SET status = 'inactive', end_time = NOW()
           WHERE ((sharer_id = ? AND sharee_id = ?) OR (sharer_id = ? AND sharee_id = ?))
           AND status = 'active'
         `;

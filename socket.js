@@ -1,4 +1,4 @@
-// socket.js - 정리된 버전
+// socket.js - 위치 공유 종료 오류 수정된 버전
 const socketIO = require('socket.io');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
@@ -397,8 +397,10 @@ function initSocketServer(server) {
       });
     });
     
-    // 위치 공유 종료 이벤트 처리
-    socket.on('stop_location_sharing', (friend_id) => {
+    // 위치 공유 종료 이벤트 처리 - 수정된 버전
+    socket.on('stop_location_sharing', (data) => {
+      const { friend_id } = data; // 객체에서 friend_id 추출
+      
       if (!friend_id) {
         return socket.emit('error', { message: '친구 ID는 필수 입력값입니다.' });
       }
@@ -428,6 +430,8 @@ function initSocketServer(server) {
           if (result.affectedRows === 0) {
             return socket.emit('error', { message: '위치 공유 종료 실패: 업데이트된 레코드가 없습니다.' });
           }
+          
+          console.log(`위치 공유 종료 완료: ${userId} -> ${friend_id}`);
           
           const friendSocketId = connectedUsers.get(friend_id);
           if (friendSocketId) {
