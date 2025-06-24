@@ -1,4 +1,4 @@
-// account/profils_edit.js - 수정된 버전
+// account/profils_edit.js - 테스트 엔드포인트 제거된 완전한 버전
 require("dotenv").config();
 const express = require("express");
 const router = express.Router();
@@ -6,6 +6,49 @@ const db = require("../db.js");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { isValidToken } = require("../routes/auth.js");
+
+// Google Cloud Storage 및 업로드 미들웨어 추가
+const { bucket } = require('../config/storage');
+const { upload, generateFileName } = require('../middleware/uploadMiddleware');
+
+// 서명된 URL 생성 헬퍼 함수
+async function generateSignedUrl(fileName) {
+  try {
+    const file = bucket.file(fileName);
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7일
+    });
+    return signedUrl;
+  } catch (error) {
+    console.error('서명된 URL 생성 오류:', error);
+    throw error;
+  }
+}
+
+// 파일명에서 서명된 URL 추출 또는 새로 생성
+async function getValidImageUrl(storedUrl) {
+  try {
+    if (!storedUrl) return null;
+    
+    // 이미 서명된 URL인 경우 파일명 추출
+    let fileName;
+    if (storedUrl.includes('storage.googleapis.com')) {
+      // URL에서 파일명 추출
+      const urlParts = storedUrl.split('/');
+      fileName = urlParts[urlParts.length - 1].split('?')[0];
+    } else {
+      // 파일명만 저장된 경우
+      fileName = storedUrl;
+    }
+    
+    // 새로운 서명된 URL 생성
+    return await generateSignedUrl(fileName);
+  } catch (error) {
+    console.error('이미지 URL 처리 오류:', error);
+    return null;
+  }
+}
 
 // 다양한 해시 방식으로 비밀번호 비교하는 함수
 async function comparePasswordMultipleFormats(inputPassword, storedHash) {
@@ -64,8 +107,8 @@ async function hashPasswordWithBcrypt(password) {
   }
 }
 
-// 현재 프로필 정보 조회
-router.get("/current", isValidToken, (req, res) => {
+// 현재 프로필 정보 조회 (개선된 이미지 URL 처리)
+router.get("/current", isValidToken, async (req, res) => {
   try {
     const userId = req.user.user_id;
     
@@ -79,13 +122,14 @@ router.get("/current", isValidToken, (req, res) => {
         user_email, 
         user_level, 
         user_exp, 
+        user_profile_picture_url,
         user_created_at,
         user_status 
       FROM users 
       WHERE user_id = ? AND user_status = 'active'
     `;
     
-    db.query(sql, [userId], (err, results) => {
+    db.query(sql, [userId], async (err, results) => {
       if (err) {
         console.error('프로필 조회 중 데이터베이스 오류:', err);
         return res.status(500).json({
@@ -105,6 +149,29 @@ router.get("/current", isValidToken, (req, res) => {
       const user = results[0];
       console.log(`프로필 조회 성공 - 사용자: ${user.user_id}`);
       
+      // 이미지 URL 처리
+      let validImageUrl = null;
+      if (user.user_profile_picture_url) {
+        try {
+          validImageUrl = await getValidImageUrl(user.user_profile_picture_url);
+          
+          // 새로운 URL이 생성되었다면 DB 업데이트
+          if (validImageUrl && validImageUrl !== user.user_profile_picture_url) {
+            const updateSql = `UPDATE users SET user_profile_picture_url = ? WHERE user_id = ?`;
+            db.query(updateSql, [validImageUrl, userId], (updateErr) => {
+              if (updateErr) {
+                console.error('프로필 이미지 URL 업데이트 오류:', updateErr);
+              } else {
+                console.log('프로필 이미지 URL 갱신 완료');
+              }
+            });
+          }
+        } catch (urlError) {
+          console.error('이미지 URL 처리 중 오류:', urlError);
+          validImageUrl = null;
+        }
+      }
+      
       res.status(200).json({
         success: true,
         data: {
@@ -113,7 +180,8 @@ router.get("/current", isValidToken, (req, res) => {
           user_nickname: user.user_nickname,
           user_email: user.user_email,
           user_level: user.user_level || 1,
-          user_exp: user.user_exp || 0
+          user_exp: user.user_exp || 0,
+          user_profile_picture_url: validImageUrl
         }
       });
     });
@@ -122,6 +190,128 @@ router.get("/current", isValidToken, (req, res) => {
     res.status(500).json({
       success: false,
       message: '서버 오류가 발생했습니다.'
+    });
+  }
+});
+
+// 프로필 이미지 URL 갱신 엔드포인트
+router.post("/refresh-image-url", isValidToken, async (req, res) => {
+  console.log('=== 이미지 URL 갱신 요청 시작 ===');
+  
+  try {
+    const userId = req.user.user_id;
+    console.log(`사용자 ID: ${userId}`);
+    
+    // 현재 저장된 이미지 정보 조회
+    const sql = `SELECT user_profile_picture_url FROM users WHERE user_id = ? AND user_status = 'active'`;
+    
+    db.query(sql, [userId], async (err, results) => {
+      if (err) {
+        console.error('사용자 조회 오류:', err);
+        return res.status(500).json({
+          success: false,
+          message: '서버 오류가 발생했습니다.',
+          error: err.message
+        });
+      }
+      
+      if (results.length === 0) {
+        console.log('사용자 정보를 찾을 수 없음');
+        return res.status(404).json({
+          success: false,
+          message: '사용자 정보를 찾을 수 없습니다.'
+        });
+      }
+      
+      const currentImageUrl = results[0].user_profile_picture_url;
+      console.log(`현재 이미지 URL: ${currentImageUrl}`);
+      
+      if (!currentImageUrl) {
+        console.log('등록된 프로필 이미지가 없음');
+        return res.status(400).json({
+          success: false,
+          message: '등록된 프로필 이미지가 없습니다.'
+        });
+      }
+      
+      try {
+        // URL에서 파일명 추출
+        let fileName;
+        if (currentImageUrl.includes('storage.googleapis.com')) {
+          const urlParts = currentImageUrl.split('/');
+          fileName = urlParts[urlParts.length - 1].split('?')[0];
+        } else {
+          fileName = currentImageUrl;
+        }
+        
+        console.log(`추출된 파일명: ${fileName}`);
+        
+        // Google Cloud Storage 파일 객체 생성
+        const file = bucket.file(fileName);
+        
+        // 파일 존재 확인
+        const [exists] = await file.exists();
+        console.log(`파일 존재 여부: ${exists}`);
+        
+        if (!exists) {
+          console.log('Google Cloud Storage에 파일이 존재하지 않음');
+          return res.status(404).json({
+            success: false,
+            message: '이미지 파일을 찾을 수 없습니다.',
+            details: `파일명: ${fileName}`
+          });
+        }
+        
+        // 새로운 서명된 URL 생성 (7일 유효)
+        const [newSignedUrl] = await file.getSignedUrl({
+          action: 'read',
+          expires: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7일
+        });
+        
+        console.log(`새로운 서명된 URL 생성: ${newSignedUrl.substring(0, 100)}...`);
+        
+        // DB 업데이트
+        const updateSql = `UPDATE users SET user_profile_picture_url = ?, user_updated_at = NOW() WHERE user_id = ?`;
+        
+        db.query(updateSql, [newSignedUrl, userId], (updateErr, result) => {
+          if (updateErr) {
+            console.error('이미지 URL 업데이트 오류:', updateErr);
+            return res.status(500).json({
+              success: false,
+              message: '이미지 URL 업데이트에 실패했습니다.',
+              error: updateErr.message
+            });
+          }
+          
+          console.log(`이미지 URL 갱신 성공 - 영향받은 행: ${result.affectedRows}`);
+          
+          res.status(200).json({
+            success: true,
+            message: '프로필 이미지 URL이 갱신되었습니다.',
+            data: {
+              profile_image_url: newSignedUrl,
+              filename: fileName
+            }
+          });
+        });
+        
+      } catch (gcsError) {
+        console.error('Google Cloud Storage 처리 오류:', gcsError);
+        res.status(500).json({
+          success: false,
+          message: '이미지 URL 갱신에 실패했습니다.',
+          error: gcsError.message,
+          details: 'Google Cloud Storage 접근 오류'
+        });
+      }
+    });
+    
+  } catch (error) {
+    console.error('이미지 URL 갱신 중 전체 오류:', error);
+    res.status(500).json({
+      success: false,
+      message: '서버 오류가 발생했습니다.',
+      error: error.message
     });
   }
 });
@@ -256,7 +446,7 @@ router.post("/check-nickname", isValidToken, (req, res) => {
 // 프로필 정보 업데이트 (닉네임만 허용)
 router.put("/update", isValidToken, (req, res) => {
   try {
-    const { new_nickname } = req.body; // 아이디 관련 필드 제거
+    const { new_nickname } = req.body;
     const currentUserId = req.user.user_id;
     
     console.log(`프로필 업데이트 요청 - 사용자: ${currentUserId}`, {
@@ -392,131 +582,298 @@ router.put("/update", isValidToken, (req, res) => {
   }
 });
 
-// 비밀번호 변경
-router.post("/change-password", isValidToken, async (req, res) => {
+// 프로필 이미지 업로드
+router.post("/upload-profile-image", isValidToken, (req, res, next) => {
+  console.log('이미지 업로드 요청 받음');
+  
+  upload.single('profile_image')(req, res, (err) => {
+    if (err) {
+      console.error('Multer 에러:', err.message);
+      return res.status(400).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
-    const { current_password, new_password } = req.body;
     const userId = req.user.user_id;
     
-    console.log(`비밀번호 변경 요청 - 사용자 ID: ${userId}`);
-    console.log(`현재 비밀번호 길이: ${current_password?.length}, 새 비밀번호 길이: ${new_password?.length}`);
-    
-    if (!current_password || !new_password) {
+    if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: '현재 비밀번호와 새 비밀번호를 모두 입력해주세요.'
+        message: '이미지 파일을 선택해주세요.'
       });
     }
     
-    // 새 비밀번호 유효성 검사
-    if (new_password.length < 8) {
-      return res.status(400).json({
-        success: false,
-        message: '새 비밀번호는 8자리 이상이어야 합니다.'
-      });
-    }
+    console.log(`프로필 이미지 업로드 요청 - 사용자: ${userId}`);
+    console.log(`파일 정보:`, {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
     
-    const hasLetter = /[a-zA-Z]/.test(new_password);
-    const hasNumber = /[0-9]/.test(new_password);
+    // 고유한 파일명 생성
+    const fileName = generateFileName(req.file.originalname);
+    const file = bucket.file(fileName);
     
-    if (!hasLetter || !hasNumber) {
-      return res.status(400).json({
-        success: false,
-        message: '새 비밀번호는 문자와 숫자를 모두 포함해야 합니다.'
-      });
-    }
+    console.log(`업로드할 파일명: ${fileName}`);
     
-    // 현재 비밀번호와 동일한지 확인
-    if (current_password === new_password) {
-      return res.status(400).json({
-        success: false,
-        message: '새 비밀번호는 현재 비밀번호와 다르게 설정해주세요.'
-      });
-    }
-    
-    // 현재 사용자의 비밀번호 조회
-    const sql = 'SELECT user_password FROM users WHERE user_id = ? AND user_status = "active"';
-    
-    db.query(sql, [userId], async (err, results) => {
-      if (err) {
-        console.error('사용자 비밀번호 조회 오류:', err);
-        return res.status(500).json({
-          success: false,
-          message: '서버 오류가 발생했습니다.'
-        });
-      }
-      
-      if (results.length === 0) {
-        console.error(`사용자를 찾을 수 없음: ${userId}`);
-        return res.status(404).json({
-          success: false,
-          message: '사용자 정보를 찾을 수 없습니다.'
-        });
-      }
-      
-      const storedPasswordHash = results[0].user_password;
-      console.log(`저장된 비밀번호 해시: ${storedPasswordHash?.substring(0, 20)}...`);
-      
-      try {
-        // 현재 비밀번호 확인 (다양한 해시 방식 지원)
-        const isCurrentPasswordValid = await comparePasswordMultipleFormats(current_password, storedPasswordHash);
-        console.log(`현재 비밀번호 확인 결과: ${isCurrentPasswordValid}`);
-        
-        if (!isCurrentPasswordValid) {
-          console.log('현재 비밀번호가 일치하지 않음');
-          return res.status(401).json({
-            success: false,
-            message: '현재 비밀번호가 올바르지 않습니다.'
-          });
+    try {
+      // 기존 이미지 파일 삭제 (선택사항)
+      const getUserSql = `SELECT user_profile_picture_url FROM users WHERE user_id = ? AND user_status = 'active'`;
+      db.query(getUserSql, [userId], async (getUserErr, getUserResults) => {
+        if (!getUserErr && getUserResults.length > 0) {
+          const oldImageUrl = getUserResults[0].user_profile_picture_url;
+          if (oldImageUrl) {
+            try {
+              // 기존 파일명 추출 및 삭제
+              const urlParts = oldImageUrl.split('/');
+              const oldFileName = urlParts[urlParts.length - 1].split('?')[0];
+              if (oldFileName && oldFileName !== fileName) {
+                const oldFile = bucket.file(oldFileName);
+                await oldFile.delete();
+                console.log(`기존 이미지 파일 삭제: ${oldFileName}`);
+              }
+            } catch (deleteError) {
+              console.error('기존 파일 삭제 중 오류:', deleteError);
+              // 삭제 실패해도 계속 진행
+            }
+          }
         }
         
-        // 새 비밀번호 해시화 (bcrypt 사용)
-        const newPasswordHash = await hashPasswordWithBcrypt(new_password);
-        
-        // 비밀번호 업데이트
-        const updateSql = 'UPDATE users SET user_password = ?, user_updated_at = NOW() WHERE user_id = ? AND user_status = "active"';
-        
-        db.query(updateSql, [newPasswordHash, userId], (updateErr, updateResult) => {
-          if (updateErr) {
-            console.error('비밀번호 업데이트 오류:', updateErr);
-            return res.status(500).json({
-              success: false,
-              message: '비밀번호 변경 중 오류가 발생했습니다.'
-            });
-          }
-          
-          if (updateResult.affectedRows === 0) {
-            console.error('비밀번호 업데이트 실패 - 영향받은 행 없음');
-            return res.status(500).json({
-              success: false,
-              message: '비밀번호 변경에 실패했습니다.'
-            });
-          }
-          
-          console.log(`비밀번호 변경 성공 - 사용자: ${userId}`);
-          
-          res.status(200).json({
-            success: true,
-            message: '비밀번호가 성공적으로 변경되었습니다.'
-          });
+        // Google Cloud Storage에 업로드
+        const stream = file.createWriteStream({
+          metadata: {
+            contentType: req.file.mimetype,
+          },
+          resumable: false,
         });
         
-      } catch (compareError) {
-        console.error('비밀번호 비교 중 오류:', compareError);
-        return res.status(500).json({
-          success: false,
-          message: '비밀번호 확인 중 오류가 발생했습니다.'
+        stream.on('error', (err) => {
+          console.error('파일 업로드 오류:', err);
+          if (!res.headersSent) {
+            res.status(500).json({
+              success: false,
+              message: '이미지 업로드에 실패했습니다.'
+            });
+          }
         });
-      }
-    });
-    
-  } catch (error) {
-    console.error('비밀번호 변경 중 오류:', error);
-    res.status(500).json({
-      success: false,
-      message: '서버 오류가 발생했습니다.'
-    });
-  }
+        
+        stream.on('finish', async () => {
+          try {
+            console.log('파일 업로드 완료, 서명된 URL 생성 중...');
+            
+            // 서명된 URL 생성 (7일 유효)
+            const signedUrl = await generateSignedUrl(fileName);
+            
+            console.log(`생성된 서명된 URL: ${signedUrl.substring(0, 100)}...`);
+            
+            // 데이터베이스에 서명된 URL 저장
+            const updateSql = `
+              UPDATE users 
+              SET user_profile_picture_url = ?, user_updated_at = NOW() 
+              WHERE user_id = ? AND user_status = 'active'
+            `;
+            
+            db.query(updateSql, [signedUrl, userId], (err, result) => {
+              if (err) {
+                console.error('프로필 이미지 URL 저장 오류:', err);
+                if (!res.headersSent) {
+                  return res.status(500).json({
+                    success: false,
+                    message: '프로필 이미지 저장에 실패했습니다.'
+                  });
+                }
+                return;
+              }
+              
+              if (result.affectedRows === 0) {
+                if (!res.headersSent) {
+                  return res.status(404).json({
+                    success: false,
+                    message: '사용자 정보를 찾을 수 없습니다.'
+                  });
+                }
+                return;
+              }
+              
+              console.log(`프로필 이미지 업로드 성공 - 사용자: ${userId}`);
+              
+              if (!res.headersSent) {
+                res.status(200).json({
+                  success: true,
+                  message: '프로필 이미지가 성공적으로 업로드되었습니다.',
+                  data: {
+                    profile_image_url: signedUrl,
+                    filename: fileName
+                  }
+                });
+              }
+            });
+            
+          } catch (signedUrlError) {
+            console.error('서명된 URL 생성 오류:', signedUrlError);
+            if (!res.headersSent) {
+              res.status(500).json({
+                success: false,
+                message: '이미지 URL 생성에 실패했습니다.'
+              });
+            }
+          }
+        });
+        
+        // 파일 데이터를 스트림에 전송
+       stream.end(req.file.buffer);
+     });
+     
+   } catch (uploadError) {
+     console.error('스트림 생성 오류:', uploadError);
+     if (!res.headersSent) {
+       res.status(500).json({
+         success: false,
+         message: '이미지 업로드 준비에 실패했습니다.'
+       });
+     }
+   }
+   
+ } catch (error) {
+   console.error('프로필 이미지 업로드 중 오류:', error);
+   if (!res.headersSent) {
+     res.status(500).json({
+       success: false,
+       message: '서버 오류가 발생했습니다.'
+     });
+   }
+ }
+});
+
+// 비밀번호 변경
+router.post("/change-password", isValidToken, async (req, res) => {
+ try {
+   const { current_password, new_password } = req.body;
+   const userId = req.user.user_id;
+   
+   console.log(`비밀번호 변경 요청 - 사용자 ID: ${userId}`);
+   console.log(`현재 비밀번호 길이: ${current_password?.length}, 새 비밀번호 길이: ${new_password?.length}`);
+   
+   if (!current_password || !new_password) {
+     return res.status(400).json({
+       success: false,
+       message: '현재 비밀번호와 새 비밀번호를 모두 입력해주세요.'
+     });
+   }
+   
+   // 새 비밀번호 유효성 검사
+   if (new_password.length < 8) {
+     return res.status(400).json({
+       success: false,
+       message: '새 비밀번호는 8자리 이상이어야 합니다.'
+     });
+   }
+   
+   const hasLetter = /[a-zA-Z]/.test(new_password);
+   const hasNumber = /[0-9]/.test(new_password);
+   
+   if (!hasLetter || !hasNumber) {
+     return res.status(400).json({
+       success: false,
+       message: '새 비밀번호는 문자와 숫자를 모두 포함해야 합니다.'
+     });
+   }
+   
+   // 현재 비밀번호와 동일한지 확인
+   if (current_password === new_password) {
+     return res.status(400).json({
+       success: false,
+       message: '새 비밀번호는 현재 비밀번호와 다르게 설정해주세요.'
+     });
+   }
+   
+   // 현재 사용자의 비밀번호 조회
+   const sql = 'SELECT user_password FROM users WHERE user_id = ? AND user_status = "active"';
+   
+   db.query(sql, [userId], async (err, results) => {
+     if (err) {
+       console.error('사용자 비밀번호 조회 오류:', err);
+       return res.status(500).json({
+         success: false,
+         message: '서버 오류가 발생했습니다.'
+       });
+     }
+     
+     if (results.length === 0) {
+       console.error(`사용자를 찾을 수 없음: ${userId}`);
+       return res.status(404).json({
+         success: false,
+         message: '사용자 정보를 찾을 수 없습니다.'
+       });
+     }
+     
+     const storedPasswordHash = results[0].user_password;
+     console.log(`저장된 비밀번호 해시: ${storedPasswordHash?.substring(0, 20)}...`);
+     
+     try {
+       // 현재 비밀번호 확인 (다양한 해시 방식 지원)
+       const isCurrentPasswordValid = await comparePasswordMultipleFormats(current_password, storedPasswordHash);
+       console.log(`현재 비밀번호 확인 결과: ${isCurrentPasswordValid}`);
+       
+       if (!isCurrentPasswordValid) {
+         console.log('현재 비밀번호가 일치하지 않음');
+         return res.status(401).json({
+           success: false,
+           message: '현재 비밀번호가 올바르지 않습니다.'
+         });
+       }
+       
+       // 새 비밀번호 해시화 (bcrypt 사용)
+       const newPasswordHash = await hashPasswordWithBcrypt(new_password);
+       
+       // 비밀번호 업데이트
+       const updateSql = 'UPDATE users SET user_password = ?, user_updated_at = NOW() WHERE user_id = ? AND user_status = "active"';
+       
+       db.query(updateSql, [newPasswordHash, userId], (updateErr, updateResult) => {
+         if (updateErr) {
+           console.error('비밀번호 업데이트 오류:', updateErr);
+           return res.status(500).json({
+             success: false,
+             message: '비밀번호 변경 중 오류가 발생했습니다.'
+           });
+         }
+         
+         if (updateResult.affectedRows === 0) {
+           console.error('비밀번호 업데이트 실패 - 영향받은 행 없음');
+           return res.status(500).json({
+             success: false,
+             message: '비밀번호 변경에 실패했습니다.'
+           });
+         }
+         
+         console.log(`비밀번호 변경 성공 - 사용자: ${userId}`);
+         
+         res.status(200).json({
+           success: true,
+           message: '비밀번호가 성공적으로 변경되었습니다.'
+         });
+       });
+       
+     } catch (compareError) {
+       console.error('비밀번호 비교 중 오류:', compareError);
+       return res.status(500).json({
+         success: false,
+         message: '비밀번호 확인 중 오류가 발생했습니다.'
+       });
+     }
+   });
+   
+ } catch (error) {
+   console.error('비밀번호 변경 중 오류:', error);
+   res.status(500).json({
+     success: false,
+     message: '서버 오류가 발생했습니다.'
+   });
+ }
 });
 
 module.exports = router;
