@@ -1,4 +1,3 @@
-// auth.js
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 
@@ -33,8 +32,8 @@ exports.isValidToken = (req, res, next) => {
       
       console.log(`토큰 검증 성공 - 사용자 ID: ${userId}`);
       
-      // 데이터베이스에서 사용자 검증
-      const sql = 'SELECT user_id, user_status FROM users WHERE user_id = ?';
+      // 데이터베이스에서 사용자 검증 및 닉네임 가져오기
+      const sql = 'SELECT user_id, user_status, user_nickname FROM users WHERE user_id = ?';
       
       db.query(sql, [userId], (err, results) => {
         if (err) {
@@ -52,9 +51,12 @@ exports.isValidToken = (req, res, next) => {
           return res.status(401).json({ error: '비활성화된 사용자입니다.' });
         }
         
-        // 요청 객체에 사용자 정보 추가
-        req.user = { user_id: userId };
-        console.log(`인증 성공 - 사용자 ID: ${userId}`);
+        // 요청 객체에 사용자 정보 추가 (닉네임 포함)
+        req.user = { 
+          user_id: userId,
+          user_nickname: results[0].user_nickname || userId // 닉네임이 없으면 user_id 사용
+        };
+        console.log(`인증 성공 - 사용자 ID: ${userId}, 닉네임: ${req.user.user_nickname}`);
         next();
       });
     } catch (jwtError) {

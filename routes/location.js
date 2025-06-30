@@ -1,4 +1,3 @@
-// routes/location.js - heading, accuracy만 제거한 원본 유지 버전
 const express = require('express');
 const router = express.Router();
 const db = require('../db');

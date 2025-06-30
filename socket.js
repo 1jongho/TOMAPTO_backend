@@ -449,10 +449,10 @@ function initSocketServer(server) {
       });
     });
 
-    // 따라가기 요청 관련 이벤트들
+    // 찾아가기 요청 관련 이벤트들 (수정된 부분)
     socket.on('send_follow_request', (data) => {
       const { friend_id } = data;
-      console.log(`따라가기 요청 수신: ${userId} -> ${friend_id}`);
+      console.log(`찾아가기 요청 수신: ${userId} -> ${friend_id}`);
       
       if (!friend_id) {
         return socket.emit('error', { message: '친구 ID는 필수 입력값입니다.' });
@@ -461,8 +461,8 @@ function initSocketServer(server) {
       // 친구 관계 및 차단 상태 확인
       checkBlockStatus(userId, friend_id, (senderBlockedRecipient, recipientBlockedSender) => {
         if (senderBlockedRecipient || recipientBlockedSender) {
-          console.log(`따라가기 요청 차단됨: ${userId} -> ${friend_id} (차단 상태)`);
-          return socket.emit('error', { message: '따라가기 요청을 보낼 수 없습니다.' });
+          console.log(`찾아가기 요청 차단됨: ${userId} -> ${friend_id} (차단 상태)`);
+          return socket.emit('error', { message: '찾아가기 요청을 보낼 수 없습니다.' });
         }
 
         // 사용자 정보 가져오기
@@ -496,7 +496,7 @@ function initSocketServer(server) {
 
     socket.on('respond_follow_request', (data) => {
       const { request_id, response } = data; // response: 'accept' or 'reject'
-      console.log(`따라가기 요청 응답: 요청ID ${request_id}, 응답: ${response}`);
+      console.log(`찾아가기 요청 응답: 요청ID ${request_id}, 응답: ${response}`);
       
       if (!request_id || !response) {
         return socket.emit('error', { message: '요청 ID와 응답은 필수 입력값입니다.' });
@@ -545,7 +545,7 @@ function initSocketServer(server) {
 
     socket.on('cancel_follow_request', (data) => {
       const { friend_id } = data;
-      console.log(`따라가기 요청 취소: ${userId} -> ${friend_id}`);
+      console.log(`찾아가기 요청 취소: ${userId} -> ${friend_id}`);
       
       if (!friend_id) {
         return socket.emit('error', { message: '친구 ID는 필수 입력값입니다.' });
@@ -571,7 +571,7 @@ function initSocketServer(server) {
 
     socket.on('stop_following', (data) => {
       const { friend_id } = data;
-      console.log(`따라가기 중단: ${userId} -> ${friend_id}`);
+      console.log(`찾아가기 중단: ${userId} -> ${friend_id}`);
       
       if (!friend_id) {
         return socket.emit('error', { message: '친구 ID는 필수 입력값입니다.' });
@@ -671,4 +671,7 @@ function initSocketServer(server) {
   return io;
 }
 
-module.exports = initSocketServer;
+module.exports = {
+  initSocketServer,
+  connectedUsers  // 🔥 이 줄 추가
+};

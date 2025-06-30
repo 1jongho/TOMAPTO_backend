@@ -61,13 +61,14 @@ app.use("/api/follow", followRoutes);
 
 // HTTP 서버 생성 및 소켓 서버 설정
 const server = require('http').createServer(app);
-const initSocketServer = require('./socket'); // socket.js 파일 가져오기
 
 // 소켓 서버 초기화
+const { initSocketServer } = require('./socket.js');
 const io = initSocketServer(server);
 
 // Express 앱에 io 인스턴스 추가 (follow.js에서 사용하기 위해)
 app.set('io', io);
+app.set('connectedUsers', require('./socket.js').connectedUsers); 
 
 // 서버 시작
 server.listen(8080, process.env.IP || '0.0.0.0', () => {
