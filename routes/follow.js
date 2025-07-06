@@ -19,10 +19,16 @@ if (!admin.apps.length) {
 
 async function sendPushNotification(fcmToken, title, body, data = {}) {
   try {
+    // 🔥 추가: 토큰 유효성 체크
+    if (!fcmToken || fcmToken === 'null' || fcmToken === '' || fcmToken === undefined) {
+      console.log('유효하지 않은 FCM 토큰:', fcmToken);
+      return null;
+    }
+
     // 🔥 수정: 모든 data 값을 문자열로 변환
     const stringifiedData = {};
     for (const [key, value] of Object.entries(data)) {
-      stringifiedData[key] = String(value); // 모든 값을 문자열로 변환
+      stringifiedData[key] = String(value);
     }
 
     const message = {
@@ -30,7 +36,7 @@ async function sendPushNotification(fcmToken, title, body, data = {}) {
         title: title,
         body: body,
       },
-      data: stringifiedData, // 🔥 수정: 문자열로 변환된 데이터 사용
+      data: stringifiedData,
       token: fcmToken,
     };
 
@@ -41,9 +47,26 @@ async function sendPushNotification(fcmToken, title, body, data = {}) {
     return response;
   } catch (error) {
     console.error('FCM 푸시 알림 전송 실패:', error);
+    
+    // 🔥 수정: 무효한 토큰 자동 제거 시스템
+    if (error.code === 'messaging/registration-token-not-registered' || 
+        error.code === 'messaging/invalid-registration-token') {
+      console.log('무효한 FCM 토큰 감지, DB에서 자동 제거:', fcmToken);
+      
+      // DB에서 무효한 토큰 제거
+      const clearTokenSQL = `UPDATE Users SET fcm_token = NULL WHERE fcm_token = ?`;
+      db.query(clearTokenSQL, [fcmToken], (err, result) => {
+        if (err) {
+          console.error('무효한 토큰 제거 실패:', err);
+        } else {
+          console.log('무효한 토큰 DB에서 자동 제거 완료');
+        }
+      });
+    }
     return null;
   }
 }
+
 // 찾아가기 요청 API
 router.post('/request', auth, (req, res) => {
   const { friend_id, type } = req.body;
@@ -412,8 +435,8 @@ if (io) {
       if (request.target_fcm_token) {
         sendPushNotification(
           request.target_fcm_token,
-          '찾아가기 취소',
-          `${req.user.user_nickname || req.user.user_id}님이 찾아가기를 취소했습니다`,
+          '찾아가기 요청 취소',
+          `${req.user.user_nickname || req.user.user_id}님이 찾아가기 요청을 취소했습니다`,
           {
             type: 'find_way',
             action: 'cancel',
@@ -500,8 +523,8 @@ if (io) {
       if (request.other_fcm_token) {
         sendPushNotification(
           request.other_fcm_token,
-          '찾아가기 중단',
-          `${req.user.user_nickname}님이 찾아가기를 중단했습니다`,
+          '찾아가기 해제',
+          `${req.user.user_nickname}님이 찾아가기를 해제했습니다`,
           {
             type: 'find_way',
             action: 'stop',
@@ -514,7 +537,7 @@ if (io) {
 
       res.status(200).json({ 
         success: true,
-        message: '찾아가기를 중단했습니다.'
+        message: '찾아가기를 해제했습니다.'
       });
     });
   });

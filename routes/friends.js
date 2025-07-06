@@ -41,7 +41,7 @@ const isUserBlockedBy = (friendship, blockerId, blockedId) => {
   return false;
 };
 
-// 사용자 검색 API (나를 차단한 사용자 필터링)
+// 사용자 검색 API (차단된 사용자 필터링 수정)
 router.get('/search', auth, (req, res) => {
   const searchTerm = req.query.term;
   const userId = req.user.user_id;
@@ -50,10 +50,11 @@ router.get('/search', auth, (req, res) => {
     return res.status(400).json({ error: '검색어가 필요합니다.' });
   }
   
-  // 나를 차단한 사용자는 검색 결과에서 제외
-  // 아이디로 검색해도 닉네임을 반환하도록 수정
+  console.log(`사용자 검색 요청: 검색어="${searchTerm}", 사용자=${userId}`);
+  
+  // 🔥 수정: 차단된 사용자는 검색 결과에서 제외하는 올바른 로직
   const searchSQL = `
-    SELECT u.user_id, u.user_name, u.user_nickname 
+    SELECT u.user_id, u.user_name, u.user_nickname, u.user_email, u.user_profile_picture_url
     FROM Users u
     LEFT JOIN Friendships f ON (
       (f.user_id_1 = ? AND f.user_id_2 = u.user_id) OR 
@@ -64,8 +65,10 @@ router.get('/search', auth, (req, res) => {
     AND u.user_status = 'active'
     AND (
       f.friendship_id IS NULL OR 
-      (f.user_id_1 = u.user_id AND IFNULL(f.is_blocked_by_user_1, 0) = 0) OR
-      (f.user_id_2 = u.user_id AND IFNULL(f.is_blocked_by_user_2, 0) = 0)
+      (
+        (f.user_id_1 = ? AND f.user_id_2 = u.user_id AND (IFNULL(f.is_blocked_by_user_1, 0) = 0 AND IFNULL(f.is_blocked_by_user_2, 0) = 0)) OR
+        (f.user_id_2 = ? AND f.user_id_1 = u.user_id AND (IFNULL(f.is_blocked_by_user_1, 0) = 0 AND IFNULL(f.is_blocked_by_user_2, 0) = 0))
+      )
     )
     ORDER BY 
       CASE 
@@ -81,11 +84,12 @@ router.get('/search', auth, (req, res) => {
   // 각 검색어에 와일드카드 추가
   const searchPattern = `%${searchTerm}%`;
   
-  // 매개변수 배열 구성 (ORDER BY 절의 LIKE 조건들도 포함)
+  // 🔥 수정: 매개변수 배열 구성 (userId 추가)
   const searchParams = [
     userId, userId, // LEFT JOIN 조건용
     searchPattern, searchPattern, searchPattern, // WHERE 조건용
     userId, // WHERE 조건용 (자기 자신 제외)
+    userId, userId, // 차단 조건용 (추가)
     searchPattern, // ORDER BY 닉네임 매치용
     searchPattern, // ORDER BY 아이디 매치용  
     searchPattern  // ORDER BY 이름 매치용
@@ -97,98 +101,75 @@ router.get('/search', auth, (req, res) => {
       return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
     }
     
-    // 검색 결과 로깅 (디버깅용)
-    console.log(`검색어 "${searchTerm}"에 대한 결과 ${results.length}개:`, 
-      results.map(r => ({
-        user_id: r.user_id,
-        user_nickname: r.user_nickname,
-        user_name: r.user_name
-      }))
-    );
+    console.log(`검색어 "${searchTerm}"에 대한 결과 ${results.length}개:`, results.map(r => ({ user_id: r.user_id, user_nickname: r.user_nickname, user_name: r.user_name })));
     
-    // 친구 요청 상태 확인을 위한 추가 쿼리
     if (results.length > 0) {
+      // 친구 관계와 요청 상태 정보 추가
       const userIds = results.map(user => user.user_id);
       const placeholders = userIds.map(() => '?').join(',');
       
-      const requestSQL = `
-        SELECT fr.sender_id, fr.recipient_id, fr.request_status, fr.request_id
-        FROM FriendRequests fr
-        WHERE (fr.sender_id = ? AND fr.recipient_id IN (${placeholders}))
-        OR (fr.recipient_id = ? AND fr.sender_id IN (${placeholders}))
+      const enrichSQL = `
+        SELECT 
+          u.user_id,
+          u.user_name as user_name,
+          u.user_nickname,
+          u.user_email,
+          u.user_profile_picture_url,
+          f.status as friendship_status,
+          CASE 
+            WHEN f.user_id_1 = ? THEN f.is_blocked_by_user_1
+            WHEN f.user_id_2 = ? THEN f.is_blocked_by_user_2
+            ELSE 0
+          END as is_blocked,
+          fr_sent.request_id as sent_request_id,
+          fr_sent.request_status as sent_request_status,
+          fr_received.request_id as received_request_id,
+          fr_received.request_status as received_request_status
+        FROM Users u
+        LEFT JOIN Friendships f ON (
+          (f.user_id_1 = ? AND f.user_id_2 = u.user_id) OR 
+          (f.user_id_2 = ? AND f.user_id_1 = u.user_id)
+        )
+        LEFT JOIN FriendRequests fr_sent ON (
+          fr_sent.sender_id = ? AND fr_sent.recipient_id = u.user_id 
+          AND fr_sent.request_status = 'pending'
+        )
+        LEFT JOIN FriendRequests fr_received ON (
+          fr_received.sender_id = u.user_id AND fr_received.recipient_id = ? 
+          AND fr_received.request_status = 'pending'
+        )
+        WHERE u.user_id IN (${placeholders})
       `;
       
-      const friendshipSQL = `
-        SELECT f.user_id_1, f.user_id_2, f.status, f.is_blocked_by_user_1, f.is_blocked_by_user_2
-        FROM Friendships f
-        WHERE (f.user_id_1 = ? AND f.user_id_2 IN (${placeholders}))
-        OR (f.user_id_2 = ? AND f.user_id_1 IN (${placeholders}))
-      `;
+      const enrichParams = [userId, userId, userId, userId, userId, userId, ...userIds];
       
-      // 파라미터 배열 구성
-      const requestParams = [userId, ...userIds, userId, ...userIds];
-      const friendshipParams = [userId, ...userIds, userId, ...userIds];
-      
-      // 친구 요청 상태 조회
-      db.query(requestSQL, requestParams, (err, requestResults) => {
+      db.query(enrichSQL, enrichParams, (err, enrichedResults) => {
         if (err) {
-          console.error('친구 요청 상태 조회 오류:', err);
-          return res.status(200).json({ users: results });
+          console.error('검색 결과 보강 오류:', err);
+          return res.status(500).json({ error: '서버 오류가 발생했습니다.' });
         }
         
-        // 친구 관계 상태 조회
-        db.query(friendshipSQL, friendshipParams, (err, friendshipResults) => {
-          if (err) {
-            console.error('친구 관계 상태 조회 오류:', err);
-            return res.status(200).json({ users: results });
+        const finalResults = enrichedResults.map(userData => {
+          // 친구 상태 확인
+          userData.is_friend = userData.friendship_status === 'active';
+          
+          // 요청 상태 확인
+          userData.request_sent = !!userData.sent_request_id;
+          userData.request_received = !!userData.received_request_id;
+          userData.request_id = userData.sent_request_id || userData.received_request_id || null;
+          
+          // 차단 상태 처리 (이미 올바르게 계산됨)
+          if (userData.friendship_status) {
+            const friendship = enrichedResults.find(f => f.user_id === userData.user_id);
+            if (friendship) {
+              userData.is_blocked = !!userData.is_blocked;
+            }
           }
           
-          // 검색 결과에 친구 요청/관계 상태 추가
-          const enrichedResults = results.map(user => {
-            const userData = { ...user };
-            
-            // 친구 요청 상태 확인
-            const outgoingRequest = requestResults.find(
-              req => req.sender_id === userId && req.recipient_id === user.user_id
-            );
-            const incomingRequest = requestResults.find(
-              req => req.recipient_id === userId && req.sender_id === user.user_id
-            );
-            
-            if (outgoingRequest) {
-              userData.request_sent = true;
-              userData.request_status = outgoingRequest.request_status;
-              userData.request_id = outgoingRequest.request_id;
-            }
-            if (incomingRequest) {
-              userData.request_received = true;
-              userData.request_status = incomingRequest.request_status;
-              userData.request_id = incomingRequest.request_id;
-            }
-            
-            // 친구 관계 상태 확인
-            const friendship = friendshipResults.find(
-              f => (f.user_id_1 === userId && f.user_id_2 === user.user_id) ||
-                   (f.user_id_2 === userId && f.user_id_1 === user.user_id)
-            );
-            
-            if (friendship) {
-              userData.is_friend = friendship.status === 'active';
-              userData.friendship_status = friendship.status;
-              
-              // 차단 상태 확인 (내가 상대를 차단했는지)
-              if (friendship.user_id_1 === userId) {
-                userData.is_blocked = !!friendship.is_blocked_by_user_1;
-              } else {
-                userData.is_blocked = !!friendship.is_blocked_by_user_2;
-              }
-            }
-            
-            return userData;
-          });
-          
-          res.status(200).json({ users: enrichedResults });
+          return userData;
         });
+        
+        res.status(200).json({ users: finalResults });
       });
     } else {
       // 검색 결과가 없는 경우
@@ -537,7 +518,7 @@ router.get('/blocked', auth, (req, res) => {
   console.log(`차단 목록 조회 요청: 사용자=${userId}`);
   
   // 내가 차단한 사용자 목록 조회
-  const sql = `
+const sql = `
     SELECT 
       f.friendship_id,
       CASE 
@@ -547,6 +528,7 @@ router.get('/blocked', auth, (req, res) => {
       END as blocked_id,
       u.user_name as name,
       u.user_nickname as nickname,
+      u.user_profile_picture_url,  
       f.status as friendship_status
     FROM Friendships f
     JOIN Users u ON (
@@ -574,6 +556,7 @@ router.get('/blocked', auth, (req, res) => {
         id: user.blocked_id,
         name: user.name || user.blocked_id,
         nickname: user.nickname || '',
+        user_profile_picture_url: user.user_profile_picture_url, 
         is_friend: user.friendship_status === 'active' // 친구 관계 여부
       }));
     
@@ -589,7 +572,8 @@ router.get('/requests', auth, (req, res) => {
   // 나를 차단하지 않은 사용자의 요청만 조회
   const sql = `
     SELECT fr.request_id, fr.sender_id, fr.recipient_id, fr.request_status, fr.created_at,
-           u.user_name as sender_name, u.user_nickname as sender_nickname
+           u.user_name as sender_name, u.user_nickname as sender_nickname,
+           u.user_profile_picture_url as sender_profile_picture_url
     FROM FriendRequests fr
     JOIN Users u ON fr.sender_id = u.user_id
     LEFT JOIN Friendships f ON (
@@ -624,7 +608,10 @@ router.post('/request/:requestId/accept', auth, (req, res) => {
   
   // 요청 확인 및 수락 권한 확인
   const checkRequestSQL = `
-    SELECT fr.*, u.user_name as sender_name, u.user_nickname as sender_nickname
+    SELECT fr.*, 
+    u.user_name as sender_name, 
+    u.user_nickname as sender_nickname,
+    u.user_profile_picture_url as sender_profile_picture_url  
     FROM FriendRequests fr 
     JOIN Users u ON fr.sender_id = u.user_id
     WHERE fr.request_id = ? AND fr.recipient_id = ? AND fr.request_status = 'pending'
@@ -842,16 +829,18 @@ router.get('/list', auth, (req, res) => {
   
   console.log(`친구 목록 조회 요청: 사용자=${userId}`);
   
-  const sql = `
+const sql = `
     SELECT 
-      f.friendship_id,
       CASE 
         WHEN f.user_id_1 = ? THEN f.user_id_2
         ELSE f.user_id_1
       END as friend_id,
       u.user_name as name,
       u.user_nickname as nickname,
-      l.updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE) as isOnline,
+      u.user_profile_picture_url,
+      l.latitude,
+      l.longitude,
+      l.updated_at,
       f.is_blocked_by_user_1,
       f.is_blocked_by_user_2,
       f.user_id_1,
@@ -901,12 +890,13 @@ router.get('/list', auth, (req, res) => {
         
         return shouldInclude;
       })
-      .map(friend => ({
-        id: friend.friend_id,
-        name: friend.name || friend.friend_id,
-        nickname: friend.nickname || '',
-        isOnline: friend.isOnline || false
-      }));
+     .map(friend => ({
+  id: friend.friend_id,
+  name: friend.name || friend.friend_id,
+  nickname: friend.nickname || '',
+  user_profile_picture_url: friend.user_profile_picture_url, // 추가
+  isOnline: friend.isOnline || false
+}));
     
     console.log(`친구 목록 조회 결과: 전체 ${results.length}명 중 표시 ${friends.length}명`);
     res.status(200).json({ friends });

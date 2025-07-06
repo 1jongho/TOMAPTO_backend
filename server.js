@@ -46,6 +46,7 @@ app.use('/api/account/login', loginRoutes); // 로그인 라우트
 app.use('/api/account/profile', profileRoutes); // 프로필 라우트
 app.use('/api/account/profile-edit', profileEditRoutes); // 프로필 편집 라우트 추가
 app.use('/api/account/logout', logoutRoutes); // 로그아웃 라우트 추가
+app.use('/api/account/fcm-token', require('./account/fcm_token')); 
 app.use('/api/account/verification', emailVerificationRoutes); // 이메일 인증 라우트 추가
 
 // 비밀번호 재설정 라우트도 동일한 emailVerificationRoutes 사용
